@@ -1,15 +1,15 @@
 from flask import Flask, jsonify, render_template
 from flask_cors import CORS
-from universe import get_nse_stocks
-from live_monitor import get_hits, get_status, start_live_monitor
+from universe import get_nifty500_stocks
+from live_registry import get_hits, get_status, scan_universe, start_live_monitors, stop_monitor, start_monitor
 import importlib
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-PORT = 5001  # macOS AirPlay uses 5000 — do not use 5000
-LIVE_MODULES = {"opening_breakout"}
+PORT = int(os.environ.get("PORT", 5001))
+LIVE_MODULES = {"opening_breakout", "positive_divergence"}
 
 
 def get_all_screeners():
@@ -18,7 +18,7 @@ def get_all_screeners():
     if not os.path.isdir(screener_dir):
         return screeners
 
-    for filename in os.listdir(screener_dir):
+    for filename in sorted(os.listdir(screener_dir)):
         if filename.endswith(".py") and filename != "__init__.py":
             module_name = filename[:-3]
             module = importlib.import_module(f"screeners.{module_name}")
@@ -38,17 +38,21 @@ def dashboard():
         {"name": name, "module": info["module"], "live": info.get("live", False)}
         for name, info in screeners.items()
     ]
-    return render_template("index.html", screeners=screener_list)
+    universe_size = len(get_nifty500_stocks())
+    return render_template(
+        "index.html",
+        screeners=screener_list,
+        universe_size=universe_size,
+    )
 
 
 @app.route("/api/run/<module_name>")
 def run_one(module_name):
     try:
         module = importlib.import_module(f"screeners.{module_name}")
-        tickers = get_nse_stocks()
+        tickers = get_nifty500_stocks()
         if module_name in LIVE_MODULES:
-            from live_monitor import scan_universe
-            results = scan_universe(tickers, incremental=True)
+            results = scan_universe(module_name, tickers, incremental=True)
         else:
             results = module.run(tickers)
         return jsonify({"name": module.NAME, "results": results, "live": module_name in LIVE_MODULES})
@@ -57,24 +61,60 @@ def run_one(module_name):
 
 
 @app.route("/api/live/status")
-def live_status():
-    return jsonify(get_status())
+@app.route("/api/live/<module_name>/status")
+def live_status(module_name=None):
+    if module_name is None:
+        module_name = "opening_breakout"
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Unknown live module"}), 404
+    return jsonify(get_status(module_name))
 
 
 @app.route("/api/live/hits")
-def live_hits():
-    status = get_status()
+@app.route("/api/live/<module_name>/hits")
+def live_hits(module_name=None):
+    if module_name is None:
+        module_name = "opening_breakout"
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Unknown live module"}), 404
+    status = get_status(module_name)
     return jsonify({
         "name": status["name"],
-        "results": get_hits(),
+        "results": get_hits(module_name),
         "live": True,
         "status": status,
     })
 
 
-if __name__ == "__main__":
-    debug = True
+@app.route("/api/live/<module_name>/stop", methods=["POST"])
+def live_stop(module_name):
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Unknown live module"}), 404
+    return jsonify(stop_monitor(module_name))
+
+
+@app.route("/api/live/<module_name>/start", methods=["POST"])
+def live_start(module_name):
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Unknown live module"}), 404
+    return jsonify(start_monitor(module_name))
+
+
+def _is_streamlit_cloud() -> bool:
+    return bool(
+        os.environ.get("STREAMLIT_SERVER_PORT")
+        or os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT")
+    )
+
+
+if _is_streamlit_cloud():
+    from streamlit_app import run_streamlit_ui
+
+    run_streamlit_ui()
+elif __name__ == "__main__":
+    debug = os.environ.get("FLASK_DEBUG", "true").lower() == "true"
     if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        start_live_monitor()
-    print(f"✅ Dashboard running at http://localhost:{PORT}")
-    app.run(debug=debug, port=PORT, host="127.0.0.1")
+        start_live_monitors(list(LIVE_MODULES))
+    host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
+    print(f"✅ Dashboard running at http://{host}:{PORT}")
+    app.run(debug=debug, port=PORT, host=host, use_reloader=debug)
