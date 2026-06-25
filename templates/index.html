@@ -662,6 +662,10 @@
 </div>
 
 <script>
+  window.STREAMLIT_MODE = {{ streamlit_mode | default(false) | tojson }};
+  window.__SCAN_CACHE__ = {{ scan_cache_json | default('{}') | safe }};
+  window.__ACTIVE_MODULE__ = {{ active_module | default('') | tojson }};
+
   const cache = {};
   let activeModule = null;
   let activeIsLive = false;
@@ -773,6 +777,7 @@
   }
 
   async function fetchLiveHits(module, name, filter = '') {
+    if (window.STREAMLIT_MODE) return;
     try {
       const res = await fetch(`/api/live/${module}/hits`);
       const data = await res.json();
@@ -802,6 +807,7 @@
   }
 
   function startLivePoll(module, name) {
+    if (window.STREAMLIT_MODE) return;
     stopLivePoll();
     fetchLiveHits(module, name);
     livePollTimer = setInterval(() => {
@@ -823,9 +829,11 @@
       document.getElementById('results-panel').innerHTML = stateHTML({
         icon: '🔴',
         title: name,
-        desc: 'Live monitor is running in the background. Click <strong>Show list</strong> to scan now, or wait — results stream in automatically.'
+        desc: window.STREAMLIT_MODE
+          ? 'On-demand scans work here. <strong>Live monitoring and desktop alerts</strong> require running <code>python run_local.py</code> on your Mac.'
+          : 'Live monitor is running in the background. Click <strong>Show list</strong> to scan now, or wait — results stream in automatically.'
       });
-      startLivePoll(module, name);
+      if (!window.STREAMLIT_MODE) startLivePoll(module, name);
       return;
     }
 
@@ -853,7 +861,7 @@
 
     if (isLive) {
       try {
-        await fetch(`/api/live/${module}/stop`, { method: 'POST' });
+        if (!window.STREAMLIT_MODE) await fetch(`/api/live/${module}/stop`, { method: 'POST' });
       } catch {
         status.textContent = 'Stop failed';
         return;
@@ -910,8 +918,29 @@
 
     if (isLive) {
       try {
-        await fetch(`/api/live/${module}/start`, { method: 'POST' });
+        if (!window.STREAMLIT_MODE) await fetch(`/api/live/${module}/start`, { method: 'POST' });
       } catch { /* resume best-effort */ }
+    }
+
+    if (window.STREAMLIT_MODE) {
+      stopLivePoll();
+      card.classList.add('active');
+      document.querySelectorAll('.screener-card').forEach(c => {
+        if (c.id !== `card-${module}`) c.classList.remove('active');
+      });
+      btn.disabled = true;
+      status.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning Nifty 500…';
+      card.classList.add('loading');
+      sortCol = null;
+      document.getElementById('results-panel').innerHTML = stateHTML({
+        loading: true,
+        title: `Scanning ${name}`,
+        desc: 'Checking Nifty 500 stocks. <strong>This may take a minute</strong> — hang tight.'
+      });
+      const url = new URL(window.top.location.href);
+      url.searchParams.set('run', module);
+      window.top.location.href = url.toString();
+      return;
     }
 
     if (isLive) {
@@ -1121,6 +1150,12 @@
 
   // Auto-select live screener on load if present
   document.addEventListener('DOMContentLoaded', () => {
+    if (window.__SCAN_CACHE__) {
+      Object.entries(window.__SCAN_CACHE__).forEach(([module, data]) => {
+        if (data && !data.error) cache[module] = data;
+      });
+    }
+
     document.querySelectorAll('.screener-card').forEach(card => {
       const module = card.dataset.module;
       const name = card.dataset.name;
@@ -1146,8 +1181,44 @@
     });
 
     const liveCard = document.querySelector('.screener-card[data-live="true"]');
-    if (liveCard) {
-      selectScreener(liveCard.dataset.module, liveCard.dataset.name, true);
+    if (window.STREAMLIT_MODE && window.__ACTIVE_MODULE__ && cache[window.__ACTIVE_MODULE__]) {
+      const module = window.__ACTIVE_MODULE__;
+      const card = document.getElementById(`card-${module}`);
+      if (card) {
+        const name = card.dataset.name;
+        const isLive = card.dataset.live === 'true';
+        const data = cache[module];
+        selectScreener(module, name, isLive);
+        const statusEl = document.getElementById(`status-${module}`);
+        const btn = document.getElementById(`btn-${module}`);
+        card.classList.remove('loading');
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = isLive
+            ? '<span aria-hidden="true">📋</span> Show list'
+            : '<span aria-hidden="true">↻</span> Re-run';
+        }
+        if (data.error) {
+          if (statusEl) statusEl.textContent = 'Error';
+          document.getElementById('results-panel').innerHTML =
+            `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Scan failed</p><p class="state-desc">${data.error}</p></div>`;
+        } else {
+          const count = data.results.length;
+          if (statusEl) {
+            statusEl.textContent = `${count} result${count !== 1 ? 's' : ''} · just now`;
+          }
+          renderResults(module, data.name, data.results);
+        }
+      }
+    } else if (liveCard) {
+      const module = liveCard.dataset.module;
+      const name = liveCard.dataset.name;
+      if (window.STREAMLIT_MODE && cache[module]?.results) {
+        selectScreener(module, name, true);
+        renderResults(module, cache[module].name, cache[module].results);
+      } else {
+        selectScreener(module, name, true);
+      }
     }
   });
 </script>

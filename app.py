@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify
 from flask_cors import CORS
 from universe import get_nifty500_stocks
 from live_registry import get_hits, get_status, scan_universe, start_live_monitors, stop_monitor, start_monitor
@@ -34,17 +34,9 @@ def get_all_screeners():
 
 @app.route("/")
 def dashboard():
-    screeners = get_all_screeners()
-    screener_list = [
-        {"name": name, "module": info["module"], "live": info.get("live", False)}
-        for name, info in screeners.items()
-    ]
-    universe_size = len(get_nifty500_stocks())
-    return render_template(
-        "index.html",
-        screeners=screener_list,
-        universe_size=universe_size,
-    )
+    from ui import render_dashboard_html
+
+    return render_dashboard_html()
 
 
 @app.route("/api/run/<module_name>")
