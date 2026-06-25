@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stock Screener · NSE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #090b10;
+      --bg-elevated: #12151c;
+      --bg-card: #161a24;
+      --bg-card-hover: #1a1f2b;
+      --bg-active: #0c1f1a;
+      --border: #252a38;
+      --border-focus: #2dd4a8;
+      --text: #e8eaef;
+      --text-muted: #6b7289;
+      --text-dim: #454d63;
+      --accent: #2dd4a8;
+      --accent-dim: rgba(45, 212, 168, 0.12);
+      --accent-glow: rgba(45, 212, 168, 0.25);
+      --warn: #f5a623;
+      --warn-dim: rgba(245, 166, 35, 0.12);
+      --error: #f87171;
+      --error-dim: rgba(248, 113, 113, 0.1);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+      --font: 'DM Sans', system-ui, sans-serif;
+      --mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -10%, rgba(45, 212, 168, 0.08), transparent),
+        radial-gradient(ellipse 60% 40% at 90% 100%, rgba(59, 130, 246, 0.05), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 24px 48px;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 32px;
+      flex-wrap: wrap;
+    }
+
+    .header-brand { display: flex; align-items: center; gap: 14px; }
+
+    .logo {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, var(--accent) 0%, #1a9e7a 100%);
+      border-radius: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      box-shadow: 0 0 20px var(--accent-glow);
+      flex-shrink: 0;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-top: 2px;
+    }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse 2.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    /* ── Layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    @media (max-width: 768px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { position: static !important; }
+    }
+
+    .sidebar-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+      padding-left: 2px;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: sticky;
+      top: 24px;
+    }
+
+    /* ── Screener cards ── */
+    .screener-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.15s;
+    }
+
+    .screener-card:hover {
+      border-color: rgba(45, 212, 168, 0.4);
+      background: var(--bg-card-hover);
+      box-shadow: var(--shadow);
+    }
+
+    .screener-card.active {
+      border-color: var(--border-focus);
+      background: var(--bg-active);
+      box-shadow: 0 0 0 1px var(--accent-dim), var(--shadow);
+    }
+
+    .screener-card.loading {
+      border-color: rgba(245, 166, 35, 0.5);
+      background: var(--warn-dim);
+      cursor: not-allowed;
+    }
+
+    .screener-card.live-card {
+      border-color: rgba(248, 113, 113, 0.35);
+    }
+
+    .screener-card.live-card.active {
+      border-color: #f87171;
+      background: rgba(248, 113, 113, 0.06);
+      box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.15), var(--shadow);
+    }
+
+    .live-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(248, 113, 113, 0.15);
+      color: #f87171;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      flex-shrink: 0;
+    }
+
+    .live-pill .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #f87171;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .live-status-bar {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      padding: 8px 22px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .live-status-bar strong { color: var(--accent); font-weight: 600; }
+    .live-status-bar .off { color: var(--text-dim); }
+
+    .card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .card-name {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.3;
+    }
+
+    .card-icon {
+      font-size: 0.75rem;
+      opacity: 0;
+      color: var(--accent);
+      transition: opacity 0.2s;
+    }
+
+    .screener-card.active .card-icon { opacity: 1; }
+
+    .card-status {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      min-height: 1.2em;
+    }
+
+    .screener-card.active .card-status { color: var(--accent); }
+    .screener-card.loading .card-status { color: var(--warn); }
+
+    .run-btn {
+      margin-top: 12px;
+      background: var(--accent);
+      color: #041510;
+      border: none;
+      padding: 9px 14px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 0.8rem;
+      font-weight: 700;
+      width: 100%;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .run-btn:hover { background: #26c095; }
+    .run-btn:active { transform: scale(0.98); }
+    .run-btn:disabled {
+      background: #2a3040;
+      color: var(--text-dim);
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* ── Results panel ── */
+    .results-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      min-height: 420px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    .results-header {
+      padding: 20px 22px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .results-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      background: var(--accent-dim);
+      color: var(--accent);
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(45, 212, 168, 0.2);
+    }
+
+    .results-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .search-wrap {
+      position: relative;
+    }
+
+    .search-wrap svg {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+
+    .search-input {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 0.82rem;
+      padding: 7px 12px 7px 32px;
+      width: 200px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .search-input:focus { border-color: var(--border-focus); }
+    .search-input::placeholder { color: var(--text-dim); }
+
+    .export-btn {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      font-family: var(--font);
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 7px 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+
+    .export-btn:hover {
+      border-color: var(--border-focus);
+      color: var(--accent);
+    }
+
+    .results-body {
+      flex: 1;
+      overflow: auto;
+      padding: 0;
+    }
+
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+
+    th {
+      text-align: left;
+      color: var(--text-muted);
+      padding: 10px 16px;
+      font-weight: 500;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: color 0.15s;
+    }
+
+    th:hover { color: var(--accent); }
+
+    th .sort-icon {
+      display: inline-block;
+      margin-left: 4px;
+      opacity: 0.3;
+      font-size: 0.65rem;
+    }
+
+    th.sorted .sort-icon { opacity: 1; color: var(--accent); }
+
+    th.num, td.num { text-align: right; }
+
+    td {
+      padding: 10px 16px;
+      border-bottom: 1px solid rgba(37, 42, 56, 0.6);
+      color: var(--text);
+      transition: background 0.1s;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: rgba(45, 212, 168, 0.04); }
+
+    td.ticker {
+      font-family: var(--mono);
+      font-weight: 500;
+      font-size: 0.82rem;
+      color: var(--accent);
+    }
+
+    td.positive { color: #4ade80; }
+    td.negative { color: var(--error); }
+
+    /* ── States ── */
+    .state-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 72px 32px;
+      flex: 1;
+      gap: 12px;
+    }
+
+    .state-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 16px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      margin-bottom: 4px;
+    }
+
+    .state-box.loading .state-icon {
+      border-color: rgba(245, 166, 35, 0.3);
+      background: var(--warn-dim);
+    }
+
+    .state-box.error .state-icon {
+      border-color: rgba(248, 113, 113, 0.3);
+      background: var(--error-dim);
+    }
+
+    .state-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .state-desc {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      max-width: 340px;
+      line-height: 1.6;
+    }
+
+    .state-desc strong { color: var(--warn); font-weight: 500; }
+
+    .spinner {
+      display: inline-block;
+      width: 22px;
+      height: 22px;
+      border: 2.5px solid rgba(245, 166, 35, 0.3);
+      border-top-color: var(--warn);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .progress-bar {
+      width: 220px;
+      height: 3px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .progress-bar::after {
+      content: '';
+      display: block;
+      height: 100%;
+      width: 40%;
+      background: var(--warn);
+      border-radius: 99px;
+      animation: indeterminate 1.4s ease-in-out infinite;
+    }
+
+    @keyframes indeterminate {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+
+    .error-msg {
+      color: var(--error);
+      font-size: 0.875rem;
+      padding: 24px;
+      text-align: center;
+      background: var(--error-dim);
+      border-top: 1px solid rgba(248, 113, 113, 0.2);
+    }
+
+    .no-match {
+      padding: 32px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <header class="header">
+    <div class="header-brand">
+      <div class="logo" aria-hidden="true">📈</div>
+      <div>
+        <h1>Stock Screener</h1>
+        <p class="subtitle">Scan all NSE-listed stocks with custom screeners</p>
+      </div>
+    </div>
+    <div class="header-meta">
+      <span class="dot" aria-hidden="true"></span>
+      NSE · {{ screeners|length }} screener{{ 's' if screeners|length != 1 else '' }}
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <p class="sidebar-label">Screeners</p>
+      <div class="sidebar" id="sidebar">
+        {% for s in screeners %}
+        <div class="screener-card{% if s.live %} live-card{% endif %}"
+             id="card-{{ s.module }}"
+             data-module="{{ s.module }}"
+             data-name="{{ s.name }}"
+             data-live="{{ s.live | string | lower }}">
+          <div class="card-top">
+            <div class="card-name">{{ s.name }}</div>
+            {% if s.live %}
+            <span class="live-pill"><span class="live-dot"></span>Live</span>
+            {% else %}
+            <span class="card-icon" aria-hidden="true">●</span>
+            {% endif %}
+          </div>
+          <div class="card-status" id="status-{{ s.module }}">{% if s.live %}Monitoring in background…{% else %}Not run yet{% endif %}</div>
+          <button class="run-btn" id="btn-{{ s.module }}">
+            <span aria-hidden="true">{% if s.live %}📋{% else %}▶{% endif %}</span> {% if s.live %}Show list{% else %}Run scan{% endif %}
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+    </aside>
+
+    <main class="results-panel" id="results-panel">
+      <div class="state-box">
+        <div class="state-icon" aria-hidden="true">🔍</div>
+        <p class="state-title">No screener selected</p>
+        <p class="state-desc">Pick a screener from the left panel and hit <strong>Run scan</strong> to find matching stocks across the NSE universe.</p>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  const cache = {};
+  let activeModule = null;
+  let activeIsLive = false;
+  let sortCol = null;
+  let sortAsc = true;
+  let livePollTimer = null;
+
+  const TICKER_KEYS = ['symbol', 'ticker', 'Symbol', 'Ticker', 'SYMBOL'];
+  const NUMERIC_HINTS = ['price', 'change', 'volume', 'cap', 'pe', 'ratio', 'pct', '%', 'rsi', 'ma', 'high', 'low', 'open', 'close'];
+  const COLUMN_ORDER = {
+    opening_breakout: ['Symbol', 'Price', '% change', 'Volume'],
+  };
+
+  function getColumns(module, results) {
+    const m = module || activeModule;
+    if (COLUMN_ORDER[m]) {
+      return COLUMN_ORDER[m];
+    }
+    return results.length ? Object.keys(results[0]) : [];
+  }
+
+  function isTickerCol(col) {
+    return TICKER_KEYS.some(k => col.toLowerCase() === k.toLowerCase());
+  }
+
+  function isNumericCol(col, sample) {
+    if (typeof sample === 'number') return true;
+    if (typeof sample === 'string' && /^[+-]?[\d,.]+%?$/.test(sample.trim())) return true;
+    return NUMERIC_HINTS.some(h => col.toLowerCase().includes(h));
+  }
+
+  function formatCell(col, val) {
+    if (val == null || val === '') return '—';
+    if (typeof val === 'number') {
+      const formatted = Number.isInteger(val)
+        ? val.toLocaleString('en-IN')
+        : val.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+      return formatted;
+    }
+    const s = String(val);
+    if (/^[+-]?[\d,.]+%$/.test(s.trim())) {
+      const n = parseFloat(s.replace('+', ''));
+      const cls = n > 0 ? 'positive' : n < 0 ? 'negative' : '';
+      return cls ? `<span class="${cls}">${s}</span>` : s;
+    }
+    return s;
+  }
+
+  function stateHTML({ icon, title, desc, loading }) {
+    return `
+      <div class="state-box${loading ? ' loading' : ''}">
+        <div class="state-icon" aria-hidden="true">${loading ? '<span class="spinner"></span>' : icon}</div>
+        <p class="state-title">${title}</p>
+        <p class="state-desc">${desc}</p>
+        ${loading ? '<div class="progress-bar" role="progressbar" aria-label="Scanning"></div>' : ''}
+      </div>`;
+  }
+
+  function stopLivePoll() {
+    if (livePollTimer) {
+      clearInterval(livePollTimer);
+      livePollTimer = null;
+    }
+  }
+
+  function liveStatusHTML(st) {
+    if (!st) return '';
+    const market = st.market_open
+      ? '<strong>Market open</strong>'
+      : '<span class="off">Market closed</span>';
+    const ready = st.levels_ready ? 'OR levels set' : 'Waiting for 9:30 AM IST…';
+    const last = st.last_scan ? `Last scan: ${new Date(st.last_scan).toLocaleTimeString()}` : 'Starting…';
+    const progress = st.scanning && st.total
+      ? ` · Scanning <strong>${st.scanned}/${st.total}</strong>`
+      : '';
+    const coverage = st.with_data != null && st.total
+      ? ` · Monitoring <strong>${st.with_data}/${st.total}</strong> NSE stocks`
+      : '';
+    const alertNote = st.baseline_done === false && st.scanning
+      ? ' · <span class="off">Setting alert baseline…</span>'
+      : st.baseline_done
+        ? ' · Alerts <strong>on</strong> for new crossovers'
+        : '';
+    return `<div class="live-status-bar">
+      <span class="live-pill"><span class="live-dot"></span>Live</span>
+      ${market} · ${ready} · ${last}${progress}${coverage}${alertNote} · <strong>${st.hits_count}</strong> breakout${st.hits_count !== 1 ? 's' : ''}
+    </div>`;
+  }
+
+  async function fetchLiveHits(module, name, filter = '') {
+    try {
+      const res = await fetch('/api/live/hits');
+      const data = await res.json();
+      const st = data.status;
+      const statusEl = document.getElementById(`status-${module}`);
+      const card = document.getElementById(`card-${module}`);
+      if (statusEl && card && !card.classList.contains('loading')) {
+        if (st.scanning) {
+          statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning ${st.scanned}/${st.total}…`;
+        } else {
+          statusEl.textContent = `${st.hits_count} live breakout${st.hits_count !== 1 ? 's' : ''} · monitoring`;
+        }
+      }
+      cache[module] = { name: data.name, results: data.results, live: true, status: st };
+      if (activeModule === module) {
+        renderResults(module, data.name, data.results, filter, st);
+      }
+    } catch {
+      /* keep polling */
+    }
+  }
+
+  function startLivePoll(module, name) {
+    stopLivePoll();
+    fetchLiveHits(module, name);
+    livePollTimer = setInterval(() => {
+      if (activeModule === module) {
+        fetchLiveHits(module, name, document.getElementById('result-search')?.value || '');
+      }
+    }, 5000);
+  }
+
+  function selectScreener(module, name, isLive = false) {
+    activeModule = module;
+    activeIsLive = isLive;
+    stopLivePoll();
+    document.querySelectorAll('.screener-card').forEach(c => c.classList.remove('active'));
+    const card = document.getElementById(`card-${module}`);
+    if (!card.classList.contains('loading')) card.classList.add('active');
+
+    if (isLive) {
+      document.getElementById('results-panel').innerHTML = stateHTML({
+        icon: '🔴',
+        title: name,
+        desc: 'Live monitor is running in the background. Click <strong>Show list</strong> to scan now, or wait — results stream in automatically.'
+      });
+      startLivePoll(module, name);
+      return;
+    }
+
+    if (cache[module]) {
+      renderResults(module, cache[module].name, cache[module].results);
+    } else {
+      document.getElementById('results-panel').innerHTML = stateHTML({
+        icon: '▶',
+        title: name,
+        desc: 'Ready to scan. Click <strong>Run scan</strong> to screen all NSE stocks with this strategy.'
+      });
+    }
+  }
+
+  async function runScreener(module, name, isLive = false) {
+    const btn = document.getElementById(`btn-${module}`);
+    const status = document.getElementById(`status-${module}`);
+    const card = document.getElementById(`card-${module}`);
+
+    activeModule = module;
+    activeIsLive = isLive;
+
+    if (isLive) {
+      stopLivePoll();
+      card.classList.add('active');
+      document.querySelectorAll('.screener-card').forEach(c => {
+        if (c.id !== `card-${module}`) c.classList.remove('active');
+      });
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Scanning…';
+      card.classList.add('loading');
+      status.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning all NSE stocks…';
+      sortCol = null;
+      document.getElementById('results-panel').innerHTML = stateHTML({
+        loading: true,
+        title: `Scanning ${name}`,
+        desc: 'Checking all NSE stocks for breakouts. <strong>Results appear as batches complete</strong> — takes ~2 min.'
+      });
+      startLivePoll(module, name);
+
+      try {
+        const res = await fetch(`/api/run/${module}`);
+        const data = await res.json();
+        if (data.error) {
+          status.textContent = 'Error';
+          document.getElementById('results-panel').innerHTML =
+            `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Scan failed</p><p class="state-desc">${data.error}</p></div>`;
+        } else {
+          const count = data.results.length;
+          status.textContent = `${count} breakout${count !== 1 ? 's' : ''} · just now`;
+          cache[module] = data;
+          renderResults(module, data.name, data.results, '', cache[module].status);
+        }
+      } catch {
+        status.textContent = 'Failed';
+      }
+
+      btn.disabled = false;
+      btn.innerHTML = '<span aria-hidden="true">📋</span> Show list';
+      card.classList.remove('loading');
+      return;
+    }
+
+    stopLivePoll();
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Running…';
+    card.classList.remove('active');
+    card.classList.add('loading');
+    status.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning…';
+
+    sortCol = null;
+    document.getElementById('results-panel').innerHTML = stateHTML({
+      loading: true,
+      title: `Scanning with ${name}`,
+      desc: 'Fetching data across all NSE stocks. <strong>This may take a few minutes</strong> — hang tight.'
+    });
+
+    try {
+      const res = await fetch(`/api/run/${module}`);
+      const data = await res.json();
+
+      if (data.error) {
+        status.textContent = 'Error';
+        card.classList.remove('loading');
+        document.getElementById('results-panel').innerHTML =
+          `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Scan failed</p><p class="state-desc">${data.error}</p></div>`;
+      } else {
+        const count = data.results.length;
+        status.textContent = `${count} result${count !== 1 ? 's' : ''} · just now`;
+        cache[module] = data;
+        renderResults(module, data.name, data.results);
+      }
+    } catch {
+      status.textContent = 'Failed';
+      document.getElementById('results-panel').innerHTML =
+        `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Connection error</p><p class="state-desc">Could not reach the server. Make sure <code>app.py</code> is running.</p></div>`;
+    }
+
+    btn.disabled = false;
+    btn.innerHTML = '<span aria-hidden="true">↻</span> Re-run';
+    card.classList.remove('loading');
+    card.classList.add('active');
+    document.querySelectorAll('.screener-card').forEach(c => {
+      if (c.id !== `card-${module}`) c.classList.remove('active');
+    });
+  }
+
+  function sortResults(results, col, asc) {
+    return [...results].sort((a, b) => {
+      let va = a[col], vb = b[col];
+      const na = typeof va === 'number' ? va : parseFloat(String(va).replace(/[,%]/g, ''));
+      const nb = typeof vb === 'number' ? vb : parseFloat(String(vb).replace(/[,%]/g, ''));
+      if (!isNaN(na) && !isNaN(nb)) return asc ? na - nb : nb - na;
+      va = String(va ?? '').toLowerCase();
+      vb = String(vb ?? '').toLowerCase();
+      return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+  }
+
+  function exportCSV(module, results) {
+    if (!results.length) return;
+    const cols = getColumns(module, results);
+    const rows = results.map(r => cols.map(c => {
+      const v = r[c] ?? '';
+      return `"${String(v).replace(/"/g, '""')}"`;
+    }).join(','));
+    const csv = [cols.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `screener-results-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function renderResults(module, name, results, filter = '', liveStatus = null) {
+    const panel = document.getElementById('results-panel');
+    sortCol = sortCol || null;
+    const liveBar = liveStatus ? liveStatusHTML(liveStatus) : '';
+
+    if (!results || results.length === 0) {
+      panel.innerHTML = `
+        ${liveBar}
+        <div class="results-header">
+          <div class="results-title">${name}</div>
+        </div>
+        <div class="state-box">
+          <div class="state-icon">∅</div>
+          <p class="state-title">No matches</p>
+          <p class="state-desc">${liveStatus ? 'No breakouts yet. The live monitor is running — you will get a desktop alert as soon as a stock crosses the opening-range high and previous-day high.' : 'No stocks matched this screener right now. Try again later or adjust the screener logic.'}</p>
+        </div>`;
+      return;
+    }
+
+    let display = sortCol ? sortResults(results, sortCol, sortAsc) : results;
+
+    if (filter) {
+      const q = filter.toLowerCase();
+      display = display.filter(r =>
+        Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q))
+      );
+    }
+
+    const cols = getColumns(module, results);
+    const thead = cols.map(c => {
+      const sorted = sortCol === c;
+      const arrow = sorted ? (sortAsc ? '▲' : '▼') : '↕';
+      const num = isNumericCol(c, results[0][c]);
+      return `<th class="${num ? 'num' : ''}${sorted ? ' sorted' : ''}" data-col="${c}">${c}<span class="sort-icon">${arrow}</span></th>`;
+    }).join('');
+
+    const tbody = display.length === 0
+      ? `<tr><td colspan="${cols.length}" class="no-match">No rows match your search.</td></tr>`
+      : display.map(r =>
+          `<tr>${cols.map(c => {
+            const ticker = isTickerCol(c);
+            const num = isNumericCol(c, r[c]);
+            const cls = [ticker ? 'ticker' : '', num ? 'num' : ''].filter(Boolean).join(' ');
+            return `<td class="${cls}">${formatCell(c, r[c])}</td>`;
+          }).join('')}</tr>`
+        ).join('');
+
+    panel.innerHTML = `
+      ${liveBar}
+      <div class="results-header">
+        <div class="results-title">${name} <span class="badge">${results.length} stock${results.length !== 1 ? 's' : ''}</span></div>
+        <div class="results-toolbar">
+          <div class="search-wrap">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
+            <input class="search-input" type="search" placeholder="Filter results…" value="${filter}" id="result-search">
+          </div>
+          <button class="export-btn" id="export-btn">↓ Export CSV</button>
+        </div>
+      </div>
+      <div class="results-body">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>${thead}</tr></thead>
+            <tbody>${tbody}</tbody>
+          </table>
+        </div>
+      </div>`;
+
+    document.getElementById('result-search').addEventListener('input', e => {
+      renderResults(module, name, results, e.target.value, liveStatus);
+    });
+
+    document.getElementById('export-btn').addEventListener('click', () => exportCSV(module, results));
+
+    panel.querySelectorAll('th[data-col]').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (sortCol === col) sortAsc = !sortAsc;
+        else { sortCol = col; sortAsc = true; }
+        renderResults(module, name, results, document.getElementById('result-search')?.value || '', liveStatus);
+      });
+    });
+  }
+
+  // Auto-select live screener on load if present
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.screener-card').forEach(card => {
+      const module = card.dataset.module;
+      const name = card.dataset.name;
+      const isLive = card.dataset.live === 'true';
+
+      card.addEventListener('click', () => selectScreener(module, name, isLive));
+
+      const btn = card.querySelector('.run-btn');
+      if (btn) {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          runScreener(module, name, isLive);
+        });
+      }
+    });
+
+    const liveCard = document.querySelector('.screener-card[data-live="true"]');
+    if (liveCard) {
+      selectScreener(liveCard.dataset.module, liveCard.dataset.name, true);
+    }
+  });
+</script>
+
+</body>
+</html>
