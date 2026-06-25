@@ -107,7 +107,7 @@ def _current_candle(intraday: pd.DataFrame) -> tuple[float | None, float | None]
 
 
 def _extract_ticker_df(data: pd.DataFrame, ticker: str) -> pd.DataFrame | None:
-    if data is None or data.empty:
+    if data is None or not isinstance(data, pd.DataFrame) or data.empty:
         return None
 
     sym = _symbol(ticker)
@@ -125,6 +125,91 @@ def _extract_ticker_df(data: pd.DataFrame, ticker: str) -> pd.DataFrame | None:
     if len(candidates) == 1 or sym in str(ticker):
         return data.dropna(how="all")
     return data.dropna(how="all")
+
+
+def build_level_cache(
+    ticker: str,
+    intraday: pd.DataFrame | None,
+    daily: pd.DataFrame | None,
+) -> dict | None:
+    """Cache OR / prev-day levels (refreshed on full scan)."""
+    intra_df = _extract_ticker_df(intraday, ticker) if intraday is not None else None
+    daily_df = _extract_ticker_df(daily, ticker) if daily is not None else None
+    or_high = _first_bar_high(intra_df) if intra_df is not None else None
+    pd_high = _prev_day_high(daily_df) if daily_df is not None else None
+    prev_close = _prev_day_close(daily_df) if daily_df is not None else None
+    if or_high is None or pd_high is None:
+        return None
+    return {
+        "Symbol": _symbol(ticker),
+        "_or_high": or_high,
+        "_pd_high": pd_high,
+        "_prev_close": prev_close,
+        "_last_price": None,
+        "_session_high": None,
+    }
+
+
+def is_near_breakout(cache: dict, proximity: float = 0.97) -> bool:
+    """True if price is within proximity of the lower breakout barrier."""
+    barrier = min(cache["_or_high"], cache["_pd_high"])
+    if not barrier:
+        return False
+    peak = max(cache.get("_last_price") or 0, cache.get("_session_high") or 0)
+    return peak >= barrier * proximity
+
+
+def stamp_cache_prices(cache: dict, session_high: float | None, last_price: float | None) -> None:
+    if session_high is not None:
+        cache["_session_high"] = session_high
+    if last_price is not None:
+        cache["_last_price"] = last_price
+
+
+def _session_high_close(intraday: pd.DataFrame) -> tuple[float | None, float | None]:
+    """Today's session high + latest price (works with 1m or 15m)."""
+    today_bars = _today_bars(intraday)
+    if today_bars.empty:
+        return None, None
+    return float(today_bars["High"].max()), float(today_bars.iloc[-1]["Close"])
+
+
+def row_from_cache(
+    ticker: str,
+    cache: dict,
+    intraday: pd.DataFrame | None,
+    *,
+    use_session_high: bool = False,
+) -> dict | None:
+    """Fast re-check using cached levels + fresh intraday bars."""
+    intra_df = _extract_ticker_df(intraday, ticker) if intraday is not None else None
+    if intra_df is None:
+        return None
+
+    if use_session_high:
+        candle_high, price = _session_high_close(intra_df)
+    else:
+        candle_high, price = _current_candle(intra_df)
+
+    if candle_high is None or price is None:
+        return None
+
+    or_high = cache["_or_high"]
+    pd_high = cache["_pd_high"]
+    breakout = candle_high > or_high and candle_high > pd_high
+    volume = _today_volume(intra_df) or 0
+    prev_close = cache.get("_prev_close")
+
+    return {
+        "Symbol": cache["Symbol"],
+        "Price": round(price, 2),
+        "% change": _pct_change(price, prev_close) if prev_close else "—",
+        "Volume": volume,
+        "_breakout": breakout,
+        "_or_high": or_high,
+        "_pd_high": pd_high,
+        "_candle_high": candle_high,
+    }
 
 
 def _levels_for_ticker(

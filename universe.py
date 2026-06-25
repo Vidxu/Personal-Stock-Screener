@@ -5,12 +5,30 @@ import json
 from datetime import datetime, timedelta
 
 CACHE_FILE = "nse_stocks.json"
+NIFTY500_FILE = "nifty_500.json"
 CACHE_EXPIRY_HOURS = 24  # Re-download only once a day
+
+
+def get_nifty500_stocks() -> list[str]:
+    """Active scan/monitor universe — Nifty 500 list from nifty_500.json."""
+    path = os.path.join(os.path.dirname(__file__), NIFTY500_FILE)
+    if not os.path.exists(path):
+        print(f"⚠️  {NIFTY500_FILE} not found — using small default list")
+        return [
+            "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS",
+            "ICICIBANK.NS", "WIPRO.NS", "SBIN.NS", "BAJFINANCE.NS",
+        ]
+    with open(path, "r") as f:
+        data = json.load(f)
+    tickers = data.get("tickers", data if isinstance(data, list) else [])
+    print(f"📦 Using Nifty 500 list ({len(tickers)} stocks)")
+    return tickers
+
 
 def get_nse_stocks():
     """
-    Downloads the full NSE stock list and returns tickers in Yahoo Finance format.
-    Uses a local cache so it doesn't re-download every time you run a screener.
+    Full NSE list (cached in nse_stocks.json). Not used by screeners currently —
+    kept for reference / future use.
     """
 
     # ── Use cache if it's fresh ──────────────────────────────────────────────

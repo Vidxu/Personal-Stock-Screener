@@ -268,7 +268,6 @@
     .screener-card.loading .card-status { color: var(--warn); }
 
     .run-btn {
-      margin-top: 12px;
       background: var(--accent);
       color: #041510;
       border: none;
@@ -278,7 +277,7 @@
       font-family: var(--font);
       font-size: 0.8rem;
       font-weight: 700;
-      width: 100%;
+      flex: 1;
       transition: background 0.15s, transform 0.1s, opacity 0.15s;
       display: flex;
       align-items: center;
@@ -293,6 +292,51 @@
       color: var(--text-dim);
       cursor: not-allowed;
       transform: none;
+    }
+
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      align-items: stretch;
+    }
+
+    .stop-btn {
+      flex: 0 0 36px;
+      width: 36px;
+      min-height: 36px;
+      padding: 0;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 0.65rem;
+      font-weight: 700;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .stop-btn:hover:not(:disabled) {
+      border-color: #ef4444;
+      color: #ef4444;
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    .stop-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .screener-card.stopped .live-pill {
+      opacity: 0.85;
+    }
+
+    .screener-card.stopped .live-dot {
+      background: var(--accent);
     }
 
     /* ── Results panel ── */
@@ -568,12 +612,12 @@
       <div class="logo" aria-hidden="true">📈</div>
       <div>
         <h1>Stock Screener</h1>
-        <p class="subtitle">Scan all NSE-listed stocks with custom screeners</p>
+        <p class="subtitle">Scan Nifty 500 stocks with custom screeners</p>
       </div>
     </div>
     <div class="header-meta">
       <span class="dot" aria-hidden="true"></span>
-      NSE · {{ screeners|length }} screener{{ 's' if screeners|length != 1 else '' }}
+      Nifty 500 · {{ screeners|length }} screener{{ 's' if screeners|length != 1 else '' }}
     </div>
   </header>
 
@@ -596,9 +640,12 @@
             {% endif %}
           </div>
           <div class="card-status" id="status-{{ s.module }}">{% if s.live %}Monitoring in background…{% else %}Not run yet{% endif %}</div>
-          <button class="run-btn" id="btn-{{ s.module }}">
-            <span aria-hidden="true">{% if s.live %}📋{% else %}▶{% endif %}</span> {% if s.live %}Show list{% else %}Run scan{% endif %}
-          </button>
+          <div class="card-actions">
+            <button class="run-btn" id="btn-{{ s.module }}">
+              <span aria-hidden="true">{% if s.live %}📋{% else %}▶{% endif %}</span> {% if s.live %}Show list{% else %}Run scan{% endif %}
+            </button>
+            <button class="stop-btn" id="stop-{{ s.module }}" title="Stop listing scan" aria-label="Stop listing scan">■</button>
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -608,7 +655,7 @@
       <div class="state-box">
         <div class="state-icon" aria-hidden="true">🔍</div>
         <p class="state-title">No screener selected</p>
-        <p class="state-desc">Pick a screener from the left panel and hit <strong>Run scan</strong> to find matching stocks across the NSE universe.</p>
+        <p class="state-desc">Pick a screener from the left panel and hit <strong>Run scan</strong> to screen the Nifty 500 universe.</p>
       </div>
     </main>
   </div>
@@ -621,11 +668,13 @@
   let sortCol = null;
   let sortAsc = true;
   let livePollTimer = null;
+  const scanAbortControllers = {};
 
   const TICKER_KEYS = ['symbol', 'ticker', 'Symbol', 'Ticker', 'SYMBOL'];
   const NUMERIC_HINTS = ['price', 'change', 'volume', 'cap', 'pe', 'ratio', 'pct', '%', 'rsi', 'ma', 'high', 'low', 'open', 'close'];
   const COLUMN_ORDER = {
     opening_breakout: ['Symbol', 'Price', '% change', 'Volume'],
+    positive_divergence: ['Symbol', 'Price', '% change', 'Volume'],
   };
 
   function getColumns(module, results) {
@@ -682,16 +731,35 @@
 
   function liveStatusHTML(st) {
     if (!st) return '';
+    if (st.stopped) {
+      return `<div class="live-status-bar">
+        <span class="live-pill"><span class="live-dot"></span>Live</span>
+        <span class="off">Listing paused</span> · Alerts <strong>on</strong> · click <strong>Show list</strong> to refresh results
+      </div>`;
+    }
     const market = st.market_open
       ? '<strong>Market open</strong>'
       : '<span class="off">Market closed</span>';
     const ready = st.levels_ready ? 'OR levels set' : 'Waiting for 9:30 AM IST…';
-    const last = st.last_scan ? `Last scan: ${new Date(st.last_scan).toLocaleTimeString()}` : 'Starting…';
+    const mode = st.scan_mode === 'alert'
+      ? `Alerts · ${st.alert_poll_seconds || 6}s`
+      : st.scan_mode === 'fast'
+        ? 'Listing refresh'
+        : st.scan_mode === 'full'
+          ? 'Full refresh'
+          : 'Idle';
+    const last = st.scan_mode === 'alert' && st.last_alert_poll
+      ? `Last alert check: ${new Date(st.last_alert_poll).toLocaleTimeString()}`
+      : st.scan_mode === 'fast' && st.last_fast_scan
+        ? `Last listing: ${new Date(st.last_fast_scan).toLocaleTimeString()}`
+        : st.last_scan
+          ? `Last scan: ${new Date(st.last_scan).toLocaleTimeString()}`
+          : 'Starting…';
     const progress = st.scanning && st.total
       ? ` · Scanning <strong>${st.scanned}/${st.total}</strong>`
       : '';
     const coverage = st.with_data != null && st.total
-      ? ` · Monitoring <strong>${st.with_data}/${st.total}</strong> NSE stocks`
+      ? ` · Monitoring <strong>${st.with_data}/${st.total}</strong> Nifty 500 stocks`
       : '';
     const alertNote = st.baseline_done === false && st.scanning
       ? ' · <span class="off">Setting alert baseline…</span>'
@@ -700,22 +768,28 @@
         : '';
     return `<div class="live-status-bar">
       <span class="live-pill"><span class="live-dot"></span>Live</span>
-      ${market} · ${ready} · ${last}${progress}${coverage}${alertNote} · <strong>${st.hits_count}</strong> breakout${st.hits_count !== 1 ? 's' : ''}
+      ${market} · ${ready} · ${mode} · ${last}${progress}${coverage}${alertNote} · <strong>${st.hits_count}</strong> breakout${st.hits_count !== 1 ? 's' : ''}
     </div>`;
   }
 
   async function fetchLiveHits(module, name, filter = '') {
     try {
-      const res = await fetch('/api/live/hits');
+      const res = await fetch(`/api/live/${module}/hits`);
       const data = await res.json();
       const st = data.status;
       const statusEl = document.getElementById(`status-${module}`);
       const card = document.getElementById(`card-${module}`);
       if (statusEl && card && !card.classList.contains('loading')) {
-        if (st.scanning) {
-          statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning ${st.scanned}/${st.total}…`;
+        if (st.stopped) {
+          statusEl.textContent = 'Listing paused · alerts on';
+          card.classList.add('stopped');
         } else {
-          statusEl.textContent = `${st.hits_count} live breakout${st.hits_count !== 1 ? 's' : ''} · monitoring`;
+          card.classList.remove('stopped');
+          if (st.scanning) {
+            statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning ${st.scanned}/${st.total}…`;
+          } else {
+            statusEl.textContent = `${st.hits_count} live breakout${st.hits_count !== 1 ? 's' : ''} · monitoring`;
+          }
         }
       }
       cache[module] = { name: data.name, results: data.results, live: true, status: st };
@@ -734,7 +808,7 @@
       if (activeModule === module) {
         fetchLiveHits(module, name, document.getElementById('result-search')?.value || '');
       }
-    }, 5000);
+    }, 3000);
   }
 
   function selectScreener(module, name, isLive = false) {
@@ -761,8 +835,59 @@
       document.getElementById('results-panel').innerHTML = stateHTML({
         icon: '▶',
         title: name,
-        desc: 'Ready to scan. Click <strong>Run scan</strong> to screen all NSE stocks with this strategy.'
+        desc: 'Ready to scan. Click <strong>Run scan</strong> to screen Nifty 500 stocks with this strategy.'
       });
+    }
+  }
+
+  async function stopScreener(module, name, isLive = false) {
+    const stopBtn = document.getElementById(`stop-${module}`);
+    const btn = document.getElementById(`btn-${module}`);
+    const status = document.getElementById(`status-${module}`);
+    const card = document.getElementById(`card-${module}`);
+
+    if (scanAbortControllers[module]) {
+      scanAbortControllers[module].abort();
+      scanAbortControllers[module] = null;
+    }
+
+    if (isLive) {
+      try {
+        await fetch(`/api/live/${module}/stop`, { method: 'POST' });
+      } catch {
+        status.textContent = 'Stop failed';
+        return;
+      }
+    }
+
+    card.classList.remove('loading');
+    card.classList.add('stopped');
+    status.textContent = isLive ? 'Listing paused · alerts on' : 'Stopped';
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = isLive
+        ? '<span aria-hidden="true">📋</span> Show list'
+        : '<span aria-hidden="true">↻</span> Re-run';
+    }
+    if (stopBtn) stopBtn.disabled = true;
+
+    if (activeModule === module && isLive) {
+      fetchLiveHits(module, name);
+    }
+
+    if (activeModule === module) {
+      const cached = cache[module];
+      if (cached?.results) {
+        renderResults(module, cached.name, cached.results, '', { ...cached.status, stopped: true });
+      } else {
+        document.getElementById('results-panel').innerHTML = stateHTML({
+          icon: isLive ? '🔴' : '⏹',
+          title: name,
+          desc: isLive
+            ? 'Listing scan is <strong>paused</strong>. Desktop <strong>alerts are still active</strong> — click <strong>Show list</strong> to refresh the table.'
+            : 'Scan stopped. Click <strong>Re-run</strong> to scan again.'
+        });
+      }
     }
   }
 
@@ -770,9 +895,24 @@
     const btn = document.getElementById(`btn-${module}`);
     const status = document.getElementById(`status-${module}`);
     const card = document.getElementById(`card-${module}`);
+    const stopBtn = document.getElementById(`stop-${module}`);
 
     activeModule = module;
     activeIsLive = isLive;
+    card.classList.remove('stopped');
+    if (stopBtn) stopBtn.disabled = false;
+
+    if (scanAbortControllers[module]) {
+      scanAbortControllers[module].abort();
+    }
+    scanAbortControllers[module] = new AbortController();
+    const { signal } = scanAbortControllers[module];
+
+    if (isLive) {
+      try {
+        await fetch(`/api/live/${module}/start`, { method: 'POST' });
+      } catch { /* resume best-effort */ }
+    }
 
     if (isLive) {
       stopLivePoll();
@@ -783,18 +923,19 @@
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Scanning…';
       card.classList.add('loading');
-      status.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning all NSE stocks…';
+      status.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning Nifty 500…';
       sortCol = null;
       document.getElementById('results-panel').innerHTML = stateHTML({
         loading: true,
         title: `Scanning ${name}`,
-        desc: 'Checking all NSE stocks for breakouts. <strong>Results appear as batches complete</strong> — takes ~2 min.'
+        desc: 'Checking Nifty 500 stocks. <strong>Results appear as batches complete</strong>.'
       });
       startLivePoll(module, name);
 
       try {
-        const res = await fetch(`/api/run/${module}`);
+        const res = await fetch(`/api/run/${module}`, { signal });
         const data = await res.json();
+        if (signal.aborted) return;
         if (data.error) {
           status.textContent = 'Error';
           document.getElementById('results-panel').innerHTML =
@@ -805,13 +946,16 @@
           cache[module] = data;
           renderResults(module, data.name, data.results, '', cache[module].status);
         }
-      } catch {
+      } catch (err) {
+        if (err.name === 'AbortError') return;
         status.textContent = 'Failed';
       }
 
+      if (signal.aborted) return;
       btn.disabled = false;
       btn.innerHTML = '<span aria-hidden="true">📋</span> Show list';
       card.classList.remove('loading');
+      scanAbortControllers[module] = null;
       return;
     }
 
@@ -826,12 +970,13 @@
     document.getElementById('results-panel').innerHTML = stateHTML({
       loading: true,
       title: `Scanning with ${name}`,
-      desc: 'Fetching data across all NSE stocks. <strong>This may take a few minutes</strong> — hang tight.'
+      desc: 'Fetching data across Nifty 500 stocks. <strong>This may take a minute</strong> — hang tight.'
     });
 
     try {
-      const res = await fetch(`/api/run/${module}`);
+      const res = await fetch(`/api/run/${module}`, { signal });
       const data = await res.json();
+      if (signal.aborted) return;
 
       if (data.error) {
         status.textContent = 'Error';
@@ -844,16 +989,19 @@
         cache[module] = data;
         renderResults(module, data.name, data.results);
       }
-    } catch {
+    } catch (err) {
+      if (err.name === 'AbortError') return;
       status.textContent = 'Failed';
       document.getElementById('results-panel').innerHTML =
         `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Connection error</p><p class="state-desc">Could not reach the server. Make sure <code>app.py</code> is running.</p></div>`;
     }
 
+    if (signal.aborted) return;
     btn.disabled = false;
     btn.innerHTML = '<span aria-hidden="true">↻</span> Re-run';
     card.classList.remove('loading');
     card.classList.add('active');
+    scanAbortControllers[module] = null;
     document.querySelectorAll('.screener-card').forEach(c => {
       if (c.id !== `card-${module}`) c.classList.remove('active');
     });
@@ -985,6 +1133,14 @@
         btn.addEventListener('click', e => {
           e.stopPropagation();
           runScreener(module, name, isLive);
+        });
+      }
+
+      const stopBtn = card.querySelector('.stop-btn');
+      if (stopBtn) {
+        stopBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          stopScreener(module, name, isLive);
         });
       }
     });
