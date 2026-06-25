@@ -4,6 +4,7 @@ from universe import get_nifty500_stocks
 from live_registry import get_hits, get_status, scan_universe, start_live_monitors, stop_monitor, start_monitor
 import importlib
 import os
+import sys
 
 app = Flask(__name__)
 CORS(app)
@@ -100,21 +101,36 @@ def live_start(module_name):
     return jsonify(start_monitor(module_name))
 
 
-def _is_streamlit_cloud() -> bool:
-    return bool(
-        os.environ.get("STREAMLIT_SERVER_PORT")
-        or os.environ.get("STREAMLIT_RUNTIME_ENVIRONMENT")
-    )
+def _is_streamlit_runtime() -> bool:
+    """True when this file is executed by Streamlit (including Streamlit Cloud)."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        if get_script_run_ctx() is not None:
+            return True
+    except Exception:
+        pass
+
+    for var in (
+        "STREAMLIT_SERVER_PORT",
+        "STREAMLIT_RUNTIME_ENVIRONMENT",
+        "STREAMLIT_CLOUD_ENV",
+    ):
+        if os.environ.get(var):
+            return True
+
+    # Streamlit Community Cloud clones repos under /mount/src/
+    if "/mount/src/" in os.path.abspath(__file__):
+        return True
+
+    return "streamlit.runtime" in sys.modules
 
 
-if _is_streamlit_cloud():
+if _is_streamlit_runtime():
     from streamlit_app import run_streamlit_ui
 
     run_streamlit_ui()
 elif __name__ == "__main__":
-    debug = os.environ.get("FLASK_DEBUG", "true").lower() == "true"
-    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        start_live_monitors(list(LIVE_MODULES))
-    host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
-    print(f"✅ Dashboard running at http://{host}:{PORT}")
-    app.run(debug=debug, port=PORT, host=host, use_reloader=debug)
+    from run_local import main
+
+    main()
