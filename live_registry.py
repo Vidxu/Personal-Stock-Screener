@@ -2,7 +2,7 @@
 Unified live monitor — one engine, alert-first polling.
 
   • Full scan (~3 min): refresh level/setup cache for all NSE stocks
-  • Alert poll (~6 s): 1m price check on hot + rotating cold symbols → fast desktop alerts
+  • Alert poll (~10 s): 1m price check on every cached Nifty 500 symbol
   • Listing refresh (~90 s): slower hit-list update for the UI (alerts are independent)
 """
 
@@ -19,13 +19,11 @@ import yfinance as yf
 from alert_notify import alert
 from universe import get_nifty500_stocks
 
-ALERT_POLL_SECONDS = 6
+ALERT_POLL_SECONDS = 10
 LISTING_FAST_SECONDS = 90
 FULL_SCAN_SECONDS = 180
-HOT_PROXIMITY = 0.97
-COLD_SLICE_SIZE = 350
-ALERT_BATCH_SIZE = 60
-ALERT_WORKERS = 4
+ALERT_BATCH_SIZE = 50
+ALERT_WORKERS = 8
 FULL_BATCH_SIZE = 100
 FULL_WORKERS = 6
 
@@ -117,18 +115,11 @@ class MonitorState:
             return list(self._state["hits"])
 
     def _send_alert(self, sym: str, row: dict, meta: dict) -> None:
-        if self.module_name == "opening_breakout":
-            msg = (
-                f"{sym} crossed OR high ₹{meta.get('_or_high', '?')} "
-                f"& prev-day high ₹{meta.get('_pd_high', '?')}"
-            )
-            title = f"Breakout: {sym}"
-        else:
-            msg = (
-                f"{sym} crossed inside-body high ₹{meta.get('_ib_high', '?')} "
-                f"(RSI div setup {meta.get('_setup_date', '')})"
-            )
-            title = f"Divergence Entry: {sym}"
+        msg = (
+            f"{sym} crossed OR high ₹{meta.get('_or_high', '?')} "
+            f"& prev-day high ₹{meta.get('_pd_high', '?')}"
+        )
+        title = f"Breakout: {sym}"
 
         threading.Thread(
             target=alert, args=(title, msg), kwargs={"sound_seconds": 2.5}, daemon=True
@@ -139,8 +130,7 @@ class MonitorState:
         if row is None:
             return False
         sym = row["Symbol"]
-        key = "_breakout" if "_breakout" in row else "_triggered"
-        now_active = bool(row.get(key, False))
+        now_active = bool(row.get("_breakout", False))
         fired = False
 
         with self._lock:
@@ -211,12 +201,11 @@ class UnifiedEngine:
         self.module_names = module_names
         self.monitors = {m: MonitorState(m) for m in module_names}
         self.ob_cache: dict[str, dict] = {}
-        self.pd_cache: dict[str, dict] = {}
+        self.universe: list[str] = []
         self._lock = threading.Lock()
         self._scan_lock = threading.Lock()
         self._last_full = 0.0
         self._last_listing = 0.0
-        self._cold_offset = 0
         self._cancel_scan: set[str] = set()
 
     def request_cancel(self, module_name: str) -> None:
@@ -239,7 +228,7 @@ class UnifiedEngine:
     def _chunks(self, tickers: list[str], size: int) -> list[list[str]]:
         return [tickers[i : i + size] for i in range(0, len(tickers), size)]
 
-    def _full_batch(self, batch: list[str]) -> tuple[list[dict], list[dict]]:
+    def _full_batch(self, batch: list[str]) -> list[dict]:
         from screeners.opening_breakout import (
             _extract_ticker_df,
             _levels_for_ticker,
@@ -248,10 +237,8 @@ class UnifiedEngine:
             levels_ready as ob_ready,
             stamp_cache_prices,
         )
-        from screeners.positive_divergence import build_setup_cache, evaluate_ticker
 
         ob_hits: list[dict] = []
-        pd_hits: list[dict] = []
 
         try:
             with ThreadPoolExecutor(max_workers=2) as dl:
@@ -269,53 +256,37 @@ class UnifiedEngine:
                 daily = f_daily.result()
         except Exception as exc:
             print(f"⚠️  full batch download: {exc}")
-            return ob_hits, pd_hits
+            return ob_hits
 
         for ticker in batch:
-            ddf = _extract_ticker_df(daily, ticker)
             idf = _extract_ticker_df(intra, ticker)
 
-            if "opening_breakout" in self.monitors and ob_ready():
-                cache = build_level_cache(ticker, intra, daily)
-                if cache:
-                    if idf is not None:
-                        sh, lp = _session_high_close(idf)
-                        stamp_cache_prices(cache, sh, lp)
-                    with self._lock:
-                        self.ob_cache[cache["Symbol"]] = cache
-                row = _levels_for_ticker(ticker, intra, daily)
-                if row:
-                    self.monitors["opening_breakout"].process_row(row)
-                    if self._listing_active("opening_breakout") and row.get("_breakout"):
-                        ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
+            if "opening_breakout" not in self.monitors or not ob_ready():
+                continue
 
-            if "positive_divergence" in self.monitors:
-                sc = build_setup_cache(ticker, ddf)
-                sym = ticker.replace(".NS", "").replace(".BO", "")
+            cache = build_level_cache(ticker, intra, daily)
+            if cache:
+                if idf is not None:
+                    sh, lp = _session_high_close(idf)
+                    stamp_cache_prices(cache, sh, lp)
                 with self._lock:
-                    if sc:
-                        self.pd_cache[sym] = sc
-                    elif sym in self.pd_cache:
-                        del self.pd_cache[sym]
-                row = evaluate_ticker(ticker, ddf, idf)
-                if row:
-                    if row.get("_in_entry_window"):
-                        self.monitors["positive_divergence"].process_row(row)
-                    if self._listing_active("positive_divergence"):
-                        pd_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
+                    self.ob_cache[cache["Symbol"]] = cache
+            row = _levels_for_ticker(ticker, intra, daily)
+            if row:
+                self.monitors["opening_breakout"].process_row(row)
+                if self._listing_active("opening_breakout") and row.get("_breakout"):
+                    ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
 
-        return ob_hits, pd_hits
+        return ob_hits
 
-    def _price_batch(self, batch: list[str], *, alerts_only: bool) -> tuple[list[dict], list[dict]]:
+    def _price_batch(self, batch: list[str], *, alerts_only: bool) -> list[dict]:
         from screeners.opening_breakout import (
             levels_ready as ob_ready,
             row_from_cache,
             stamp_cache_prices,
         )
-        from screeners.positive_divergence import row_from_setup
 
         ob_hits: list[dict] = []
-        pd_hits: list[dict] = []
 
         try:
             intra = yf.download(
@@ -323,38 +294,30 @@ class UnifiedEngine:
                 group_by="ticker", threads=True, progress=False,
             )
         except Exception:
-            return ob_hits, pd_hits
+            return ob_hits
+
+        if "opening_breakout" not in self.monitors or not ob_ready():
+            return ob_hits
 
         for ticker in batch:
             sym = ticker.replace(".NS", "").replace(".BO", "")
+            with self._lock:
+                cache = self.ob_cache.get(sym)
+            if not cache:
+                continue
+            row = row_from_cache(ticker, cache, intra, use_session_high=True)
+            if not row:
+                continue
+            self.monitors["opening_breakout"].process_row(row)
+            stamp_cache_prices(
+                cache,
+                row.get("_candle_high"),
+                row.get("Price"),
+            )
+            if not alerts_only and self._listing_active("opening_breakout") and row.get("_breakout"):
+                ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
 
-            if "opening_breakout" in self.monitors and ob_ready():
-                with self._lock:
-                    cache = self.ob_cache.get(sym)
-                if cache:
-                    row = row_from_cache(ticker, cache, intra, use_session_high=True)
-                    if row:
-                        self.monitors["opening_breakout"].process_row(row)
-                        stamp_cache_prices(
-                            cache,
-                            row.get("_candle_high"),
-                            row.get("Price"),
-                        )
-                        if not alerts_only and self._listing_active("opening_breakout") and row.get("_breakout"):
-                            ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
-
-            if "positive_divergence" in self.monitors:
-                with self._lock:
-                    sc = self.pd_cache.get(sym)
-                if sc:
-                    row = row_from_setup(ticker, sc, intra)
-                    if row:
-                        if row.get("_in_entry_window"):
-                            self.monitors["positive_divergence"].process_row(row)
-                        if not alerts_only and self._listing_active("positive_divergence"):
-                            pd_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
-
-        return ob_hits, pd_hits
+        return ob_hits
 
     def _merge_hits(self, acc: dict[str, dict], hits: list[dict]) -> None:
         for h in hits:
@@ -383,30 +346,13 @@ class UnifiedEngine:
                 mon._state["last_alert_poll"] = datetime.now().isoformat(timespec="seconds")
 
     def _alert_symbols(self) -> list[str]:
-        from screeners.opening_breakout import is_near_breakout, levels_ready as ob_ready
+        from screeners.opening_breakout import levels_ready as ob_ready
 
-        chosen: set[str] = set()
+        if "opening_breakout" not in self.monitors or not ob_ready():
+            return []
 
         with self._lock:
-            if "positive_divergence" in self.monitors:
-                chosen.update(self.pd_cache)
-
-            if "opening_breakout" in self.monitors and ob_ready():
-                cold: list[str] = []
-                for sym, cache in self.ob_cache.items():
-                    if is_near_breakout(cache, HOT_PROXIMITY):
-                        chosen.add(sym)
-                    else:
-                        cold.append(sym)
-
-                if cold:
-                    cold.sort()
-                    start = self._cold_offset % len(cold)
-                    for i in range(min(COLD_SLICE_SIZE, len(cold))):
-                        chosen.add(cold[(start + i) % len(cold)])
-                    self._cold_offset = (start + COLD_SLICE_SIZE) % len(cold)
-
-        return [f"{s}.NS" for s in chosen]
+            return [f"{s}.NS" for s in sorted(self.ob_cache)]
 
     def alert_poll(self) -> int:
         """Fast price check for desktop alerts; also upserts active symbols into the hit list."""
@@ -441,7 +387,6 @@ class UnifiedEngine:
         total = len(tickers)
         t0 = time_mod.time()
         all_ob: dict[str, dict] = {}
-        all_pd: dict[str, dict] = {}
         aborted = False
 
         try:
@@ -460,49 +405,40 @@ class UnifiedEngine:
                     if self._scan_aborted():
                         aborted = True
                         break
-                    ob_hits, pd_hits = fut.result()
+                    ob_hits = fut.result()
                     if self._listing_active("opening_breakout"):
                         self._merge_hits(all_ob, ob_hits)
-                    if self._listing_active("positive_divergence"):
-                        self._merge_hits(all_pd, pd_hits)
                     scanned += len(futures[fut])
-                    if incremental:
-                        if "opening_breakout" in self.monitors and self._listing_active("opening_breakout"):
-                            self._set_module_hits(
-                                "opening_breakout", list(all_ob.values()), scanned,
-                                len(self.ob_cache), total, "full",
-                            )
-                        if "positive_divergence" in self.monitors and self._listing_active("positive_divergence"):
-                            self._set_module_hits(
-                                "positive_divergence", list(all_pd.values()), scanned,
-                                len(self.pd_cache), total, "full",
-                            )
+                    if incremental and self._listing_active("opening_breakout"):
+                        self._set_module_hits(
+                            "opening_breakout", list(all_ob.values()), scanned,
+                            len(self.ob_cache), total, "full",
+                        )
 
             for m in self.module_names:
                 if not self._listing_active(m):
                     with self.monitors[m]._lock:
                         self.monitors[m]._state["scanning"] = False
                     continue
-                wd = len(self.ob_cache if m == "opening_breakout" else self.pd_cache)
-                self.monitors[m].end_scan(total, wd, mode="full")
+                self.monitors[m].end_scan(total, len(self.ob_cache), mode="full")
 
-            if "opening_breakout" in self.monitors and self._listing_active("opening_breakout"):
-                self._set_module_hits("opening_breakout", list(all_ob.values()), total, len(self.ob_cache), total, "full")
-            if "positive_divergence" in self.monitors and self._listing_active("positive_divergence"):
-                self._set_module_hits("positive_divergence", list(all_pd.values()), total, len(self.pd_cache), total, "full")
+            if self._listing_active("opening_breakout"):
+                self._set_module_hits(
+                    "opening_breakout", list(all_ob.values()), total, len(self.ob_cache), total, "full",
+                )
 
             if not aborted:
                 self._last_full = time_mod.time()
             print(
                 f"{'⏹' if aborted else '✅'} Full scan {total} stocks in {time_mod.time() - t0:.0f}s — "
-                f"OB:{len(all_ob)} PD:{len(all_pd)}"
+                f"OB:{len(all_ob)}"
             )
         finally:
             self._scan_lock.release()
 
         return {
-            "opening_breakout": list(all_ob.values()) if "opening_breakout" in self.monitors else [],
-            "positive_divergence": list(all_pd.values()) if "positive_divergence" in self.monitors else [],
+            m: list(all_ob.values()) if m == "opening_breakout" else []
+            for m in self.module_names
         }
 
     def listing_refresh(self, tickers: list[str]) -> None:
@@ -512,7 +448,6 @@ class UnifiedEngine:
 
         total = len(tickers)
         all_ob: dict[str, dict] = {}
-        all_pd: dict[str, dict] = {}
 
         for m in self.module_names:
             if self._listing_active(m):
@@ -527,24 +462,17 @@ class UnifiedEngine:
             for fut in as_completed(futures):
                 if self._scan_aborted():
                     break
-                ob_hits, pd_hits = fut.result()
+                ob_hits = fut.result()
                 if self._listing_active("opening_breakout"):
                     self._merge_hits(all_ob, ob_hits)
-                if self._listing_active("positive_divergence"):
-                    self._merge_hits(all_pd, pd_hits)
                 scanned += len(futures[fut])
                 if self._listing_active("opening_breakout"):
                     self._set_module_hits(
                         "opening_breakout", list(all_ob.values()), scanned,
                         len(self.ob_cache), total, "fast",
                     )
-                if self._listing_active("positive_divergence"):
-                    self._set_module_hits(
-                        "positive_divergence", list(all_pd.values()), scanned,
-                        len(self.pd_cache), total, "fast",
-                    )
 
-        if "opening_breakout" in self.monitors and self._listing_active("opening_breakout"):
+        if self._listing_active("opening_breakout"):
             self._set_module_hits(
                 "opening_breakout", list(all_ob.values()), total,
                 len(self.ob_cache), total, "fast",
@@ -554,20 +482,11 @@ class UnifiedEngine:
             with self.monitors["opening_breakout"]._lock:
                 self.monitors["opening_breakout"]._state["scanning"] = False
 
-        if "positive_divergence" in self.monitors and self._listing_active("positive_divergence"):
-            self._set_module_hits(
-                "positive_divergence", list(all_pd.values()), total,
-                len(self.pd_cache), total, "fast",
-            )
-            self.monitors["positive_divergence"].end_scan(total, len(self.pd_cache), mode="fast")
-        elif "positive_divergence" in self.monitors:
-            with self.monitors["positive_divergence"]._lock:
-                self.monitors["positive_divergence"]._state["scanning"] = False
-
     def monitor_loop(self) -> None:
         from screeners.opening_breakout import IST, is_market_hours, levels_ready
 
         tickers = get_nifty500_stocks()
+        self.universe = tickers
         last_day = None
 
         for m in self.monitors.values():
@@ -590,10 +509,8 @@ class UnifiedEngine:
                         m.reset_baseline()
                     with self._lock:
                         self.ob_cache.clear()
-                        self.pd_cache.clear()
                     self._last_full = 0
                     self._last_listing = 0
-                    self._cold_offset = 0
                     last_day = today
 
                 if not is_market_hours():
@@ -610,6 +527,9 @@ class UnifiedEngine:
                     need_full = True
                 if need_full:
                     self.full_scan(tickers, incremental=True)
+                    with self._lock:
+                        cached = len(self.ob_cache)
+                    print(f"📡 Monitoring {cached}/{len(tickers)} stocks for alerts")
                 else:
                     self.alert_poll()
                     if self._any_listing_active() and now - self._last_listing >= LISTING_FAST_SECONDS:

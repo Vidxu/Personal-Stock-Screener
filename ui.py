@@ -14,7 +14,7 @@ _flask = Flask(__name__, template_folder="templates")
 
 
 def get_screener_list() -> list[dict[str, Any]]:
-    live_modules = {"opening_breakout", "positive_divergence"}
+    live_modules = {"opening_breakout"}
     screeners: list[dict[str, Any]] = []
     import os
 

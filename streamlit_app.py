@@ -18,7 +18,7 @@ def _run_scan(module_name: str) -> dict:
     return {
         "name": module.NAME,
         "results": results,
-        "live": module_name in {"opening_breakout", "positive_divergence"},
+        "live": module_name in {"opening_breakout"},
     }
 
 

@@ -4,13 +4,12 @@ from universe import get_nifty500_stocks
 from live_registry import get_hits, get_status, scan_universe, start_live_monitors, stop_monitor, start_monitor
 import importlib
 import os
-import sys
 
 app = Flask(__name__)
 CORS(app)
 
 PORT = int(os.environ.get("PORT", 5001))
-LIVE_MODULES = {"opening_breakout", "positive_divergence"}
+LIVE_MODULES = {"opening_breakout"}
 
 
 def get_all_screeners():
@@ -94,15 +93,7 @@ def live_start(module_name):
 
 
 def _is_streamlit_runtime() -> bool:
-    """True when this file is executed by Streamlit (including Streamlit Cloud)."""
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-
-        if get_script_run_ctx() is not None:
-            return True
-    except Exception:
-        pass
-
+    """True on Streamlit Cloud / `streamlit run` — not for plain `python app.py`."""
     for var in (
         "STREAMLIT_SERVER_PORT",
         "STREAMLIT_RUNTIME_ENVIRONMENT",
@@ -110,19 +101,15 @@ def _is_streamlit_runtime() -> bool:
     ):
         if os.environ.get(var):
             return True
-
-    # Streamlit Community Cloud clones repos under /mount/src/
-    if "/mount/src/" in os.path.abspath(__file__):
-        return True
-
-    return "streamlit.runtime" in sys.modules
+    return "/mount/src/" in os.path.abspath(__file__)
 
 
-if _is_streamlit_runtime():
-    from streamlit_app import run_streamlit_ui
+if __name__ == "__main__":
+    if _is_streamlit_runtime():
+        from streamlit_app import run_streamlit_ui
 
-    run_streamlit_ui()
-elif __name__ == "__main__":
-    from run_local import main
+        run_streamlit_ui()
+    else:
+        from run_local import main
 
-    main()
+        main()
