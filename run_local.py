@@ -4,8 +4,7 @@
 import os
 import socket
 
-from app import PORT, LIVE_MODULES, app
-from live_registry import start_live_monitors
+from app import PORT, app
 
 
 def _bindable_port(preferred: int, host: str = "127.0.0.1") -> int:
@@ -21,9 +20,16 @@ def _bindable_port(preferred: int, host: str = "127.0.0.1") -> int:
 
 
 def main() -> None:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+    if not os.environ.get("UPSTOX_ACCESS_TOKEN", "").strip():
+        print(
+            "⚠️  UPSTOX_ACCESS_TOKEN is not set — market data requests will fail.\n"
+            "   Generate one: python get_upstox_token.py\n"
+            "   (API key/secret are already in .env; you still need the access token.)"
+        )
     debug = os.environ.get("FLASK_DEBUG", "true").lower() == "true"
-    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-        start_live_monitors(list(LIVE_MODULES))
     host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
     port = int(os.environ.get("PORT", PORT))
     if not os.environ.get("PORT"):

@@ -1,7 +1,6 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 from universe import get_nifty500_stocks
-from live_registry import get_hits, get_status, scan_universe, start_live_monitors, stop_monitor, start_monitor
 import importlib
 import os
 
@@ -9,7 +8,6 @@ app = Flask(__name__)
 CORS(app)
 
 PORT = int(os.environ.get("PORT", 5001))
-LIVE_MODULES = {"opening_breakout"}
 
 
 def get_all_screeners():
@@ -26,7 +24,6 @@ def get_all_screeners():
                 screeners[module.NAME] = {
                     "func": module.run,
                     "module": module_name,
-                    "live": module_name in LIVE_MODULES,
                 }
     return screeners
 
@@ -43,53 +40,10 @@ def run_one(module_name):
     try:
         module = importlib.import_module(f"screeners.{module_name}")
         tickers = get_nifty500_stocks()
-        if module_name in LIVE_MODULES:
-            results = scan_universe(module_name, tickers, incremental=True)
-        else:
-            results = module.run(tickers)
-        return jsonify({"name": module.NAME, "results": results, "live": module_name in LIVE_MODULES})
+        results = module.run(tickers)
+        return jsonify({"name": module.NAME, "results": results})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/live/status")
-@app.route("/api/live/<module_name>/status")
-def live_status(module_name=None):
-    if module_name is None:
-        module_name = "opening_breakout"
-    if module_name not in LIVE_MODULES:
-        return jsonify({"error": "Unknown live module"}), 404
-    return jsonify(get_status(module_name))
-
-
-@app.route("/api/live/hits")
-@app.route("/api/live/<module_name>/hits")
-def live_hits(module_name=None):
-    if module_name is None:
-        module_name = "opening_breakout"
-    if module_name not in LIVE_MODULES:
-        return jsonify({"error": "Unknown live module"}), 404
-    status = get_status(module_name)
-    return jsonify({
-        "name": status["name"],
-        "results": get_hits(module_name),
-        "live": True,
-        "status": status,
-    })
-
-
-@app.route("/api/live/<module_name>/stop", methods=["POST"])
-def live_stop(module_name):
-    if module_name not in LIVE_MODULES:
-        return jsonify({"error": "Unknown live module"}), 404
-    return jsonify(stop_monitor(module_name))
-
-
-@app.route("/api/live/<module_name>/start", methods=["POST"])
-def live_start(module_name):
-    if module_name not in LIVE_MODULES:
-        return jsonify({"error": "Unknown live module"}), 404
-    return jsonify(start_monitor(module_name))
 
 
 def _is_streamlit_runtime() -> bool:

@@ -3,7 +3,7 @@ Unified live monitor — one engine, alert-first polling.
 
   • Full scan (~3 min): refresh level/setup cache for all NSE stocks
   • Alert poll (~10 s): 1m price check on every cached Nifty 500 symbol
-  • Listing refresh (~90 s): slower hit-list update for the UI (alerts are independent)
+  • UI listing: on-demand only (Scan button); alert crossovers append to an active list
 """
 
 from __future__ import annotations
@@ -14,15 +14,14 @@ import time as time_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import yfinance as yf
+from market_data import download, fetch_ohlc_batch
 
 from alert_notify import alert
 from universe import get_nifty500_stocks
 
 ALERT_POLL_SECONDS = 10
-LISTING_FAST_SECONDS = 90
 FULL_SCAN_SECONDS = 180
-ALERT_BATCH_SIZE = 50
+ALERT_BATCH_SIZE = 500
 ALERT_WORKERS = 8
 FULL_BATCH_SIZE = 100
 FULL_WORKERS = 6
@@ -41,7 +40,9 @@ class MonitorState:
         self._lock = threading.Lock()
         self._state = {
             "running": False,
-            "stopped": False,
+            "stopped": True,
+            "list_enabled": False,
+            "ui_scan_active": False,
             "scanning": False,
             "scan_mode": "idle",
             "last_scan": None,
@@ -76,6 +77,8 @@ class MonitorState:
                 "market_open": self.module.is_market_hours(),
                 "levels_ready": self.module.levels_ready(),
                 "baseline_done": self._state["baseline_done"],
+                "list_enabled": self._state.get("list_enabled", False),
+                "ui_scan_active": self._state.get("ui_scan_active", False),
                 "alert_poll_seconds": ALERT_POLL_SECONDS,
                 "module": self.module_name,
                 "name": self.module.NAME,
@@ -84,24 +87,38 @@ class MonitorState:
     def _display_row(self, row: dict) -> dict:
         return {k: v for k, v in row.items() if not k.startswith("_")}
 
+    @staticmethod
+    def _hit_symbol(row: dict) -> str | None:
+        return row.get("Symbol") or row.get("Stock")
+
+    def _row_active(self, row: dict) -> bool:
+        if self.module_name == "opening_breakout":
+            return bool(row.get("_breakout", False))
+        return bool(row.get("_triggered", False))
+
     def upsert_hit(self, row: dict) -> None:
         display = self._display_row(row)
-        sym = display.get("Symbol")
+        sym = self._hit_symbol(display)
         if not sym:
             return
         with self._lock:
-            merged = {h["Symbol"]: h for h in self._state["hits"]}
+            merged = {self._hit_symbol(h) or "": h for h in self._state["hits"]}
             merged[sym] = display
             self._state["hits"] = list(merged.values())
 
     def remove_hit(self, sym: str) -> None:
         with self._lock:
-            self._state["hits"] = [h for h in self._state["hits"] if h.get("Symbol") != sym]
+            self._state["hits"] = [
+                h for h in self._state["hits"]
+                if self._hit_symbol(h) != sym
+            ]
 
     def sync_hits_from_triggers(self) -> None:
         """Ensure actively triggered symbols stay visible in the hit list."""
+        if not self._list_updates_allowed():
+            return
         with self._lock:
-            merged = {h["Symbol"]: h for h in self._state["hits"]}
+            merged = {self._hit_symbol(h) or "": h for h in self._state["hits"]}
             for sym, active in self._state["trigger_state"].items():
                 if not active:
                     continue
@@ -113,6 +130,32 @@ class MonitorState:
     def get_hits(self) -> list[dict]:
         with self._lock:
             return list(self._state["hits"])
+
+    def clear_hits(self) -> None:
+        with self._lock:
+            self._state["hits"] = []
+
+    def enable_list(self) -> None:
+        with self._lock:
+            self._state["list_enabled"] = True
+
+    def disable_list(self) -> None:
+        with self._lock:
+            self._state["list_enabled"] = False
+
+    def begin_ui_scan(self) -> None:
+        with self._lock:
+            self._state["ui_scan_active"] = True
+            self._state["list_enabled"] = True
+            self._state["hits"] = []
+
+    def end_ui_scan(self) -> None:
+        with self._lock:
+            self._state["ui_scan_active"] = False
+
+    def _list_updates_allowed(self) -> bool:
+        with self._lock:
+            return bool(self._state.get("list_enabled")) and not self._state.get("stopped", False)
 
     def _send_alert(self, sym: str, row: dict, meta: dict) -> None:
         msg = (
@@ -129,8 +172,10 @@ class MonitorState:
     def process_row(self, row: dict | None) -> bool:
         if row is None:
             return False
-        sym = row["Symbol"]
-        now_active = bool(row.get("_breakout", False))
+        sym = self._hit_symbol(row)
+        if not sym:
+            return False
+        now_active = self._row_active(row)
         fired = False
 
         with self._lock:
@@ -138,19 +183,16 @@ class MonitorState:
             self._state["alert_meta"][sym] = row
             if not self._state["baseline_done"]:
                 self._state["trigger_state"][sym] = now_active
-                if now_active:
-                    self._state["hits"] = list(
-                        {**{h["Symbol"]: h for h in self._state["hits"]}, sym: self._display_row(row)}.values()
-                    )
                 return False
             if now_active and not was:
                 fired = True
             self._state["trigger_state"][sym] = now_active
 
-        if now_active:
-            self.upsert_hit(row)
-        elif was and not now_active:
-            self.remove_hit(sym)
+        if self._list_updates_allowed():
+            if now_active:
+                self.upsert_hit(row)
+            elif was and not now_active:
+                self.remove_hit(sym)
 
         if fired:
             self._send_alert(sym, self._display_row(row), row)
@@ -205,7 +247,6 @@ class UnifiedEngine:
         self._lock = threading.Lock()
         self._scan_lock = threading.Lock()
         self._last_full = 0.0
-        self._last_listing = 0.0
         self._cancel_scan: set[str] = set()
 
     def request_cancel(self, module_name: str) -> None:
@@ -214,13 +255,11 @@ class UnifiedEngine:
     def clear_cancel(self, module_name: str) -> None:
         self._cancel_scan.discard(module_name)
 
-    def _listing_active(self, module: str) -> bool:
+    def _ui_scan_active(self, module: str) -> bool:
         if module not in self.monitors:
             return False
-        return self.monitors[module].is_active()
-
-    def _any_listing_active(self) -> bool:
-        return any(self._listing_active(m) for m in self.module_names)
+        with self.monitors[module]._lock:
+            return bool(self.monitors[module]._state.get("ui_scan_active"))
 
     def _scan_aborted(self) -> bool:
         return bool(self._cancel_scan)
@@ -243,13 +282,13 @@ class UnifiedEngine:
         try:
             with ThreadPoolExecutor(max_workers=2) as dl:
                 f_intra = dl.submit(
-                    yf.download,
-                    batch, interval="15m", period="5d",
+                    download,
+                    batch, interval="15m", period="1d",
                     group_by="ticker", threads=True, progress=False,
                 )
                 f_daily = dl.submit(
-                    yf.download,
-                    batch, interval="1d", period="90d",
+                    download,
+                    batch, interval="1d", period="120d",
                     group_by="ticker", threads=True, progress=False,
                 )
                 intra = f_intra.result()
@@ -261,72 +300,67 @@ class UnifiedEngine:
         for ticker in batch:
             idf = _extract_ticker_df(intra, ticker)
 
-            if "opening_breakout" not in self.monitors or not ob_ready():
-                continue
-
-            cache = build_level_cache(ticker, intra, daily)
-            if cache:
-                if idf is not None:
-                    sh, lp = _session_high_close(idf)
-                    stamp_cache_prices(cache, sh, lp)
-                with self._lock:
-                    self.ob_cache[cache["Symbol"]] = cache
-            row = _levels_for_ticker(ticker, intra, daily)
-            if row:
-                self.monitors["opening_breakout"].process_row(row)
-                if self._listing_active("opening_breakout") and row.get("_breakout"):
-                    ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
+            if "opening_breakout" in self.monitors and ob_ready():
+                cache = build_level_cache(ticker, intra, daily)
+                if cache:
+                    if idf is not None:
+                        sh, lp = _session_high_close(idf)
+                        stamp_cache_prices(cache, sh, lp)
+                    with self._lock:
+                        self.ob_cache[cache["Symbol"]] = cache
+                row = _levels_for_ticker(ticker, intra, daily)
+                if row:
+                    self.monitors["opening_breakout"].process_row(row)
+                    if self._ui_scan_active("opening_breakout") and row.get("_breakout"):
+                        ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
 
         return ob_hits
 
     def _price_batch(self, batch: list[str], *, alerts_only: bool) -> list[dict]:
         from screeners.opening_breakout import (
             levels_ready as ob_ready,
-            row_from_cache,
+            row_from_ohlc,
             stamp_cache_prices,
         )
 
         ob_hits: list[dict] = []
 
         try:
-            intra = yf.download(
-                batch, interval="1m", period="1d",
-                group_by="ticker", threads=True, progress=False,
-            )
+            quotes = fetch_ohlc_batch(batch, interval="I1")
         except Exception:
-            return ob_hits
-
-        if "opening_breakout" not in self.monitors or not ob_ready():
             return ob_hits
 
         for ticker in batch:
             sym = ticker.replace(".NS", "").replace(".BO", "")
-            with self._lock:
-                cache = self.ob_cache.get(sym)
-            if not cache:
-                continue
-            row = row_from_cache(ticker, cache, intra, use_session_high=True)
-            if not row:
-                continue
-            self.monitors["opening_breakout"].process_row(row)
-            stamp_cache_prices(
-                cache,
-                row.get("_candle_high"),
-                row.get("Price"),
-            )
-            if not alerts_only and self._listing_active("opening_breakout") and row.get("_breakout"):
-                ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
+            quote = quotes.get(sym)
+
+            if "opening_breakout" in self.monitors and ob_ready():
+                with self._lock:
+                    cache = self.ob_cache.get(sym)
+                if cache and quote:
+                    row = row_from_ohlc(cache, quote, use_session_high=True)
+                    if row:
+                        self.monitors["opening_breakout"].process_row(row)
+                        stamp_cache_prices(
+                            cache,
+                            row.get("_candle_high"),
+                            row.get("Price"),
+                        )
+                        if self._ui_scan_active("opening_breakout") and row.get("_breakout"):
+                            ob_hits.append({k: v for k, v in row.items() if not k.startswith("_")})
 
         return ob_hits
 
     def _merge_hits(self, acc: dict[str, dict], hits: list[dict]) -> None:
         for h in hits:
-            acc[h["Symbol"]] = h
+            key = h.get("Symbol") or h.get("Stock") or ""
+            if key:
+                acc[key] = h
 
     def _set_module_hits(self, module: str, hits: list[dict], scanned: int, with_data: int, total: int, mode: str) -> None:
         mon = self.monitors[module]
         with mon._lock:
-            merged = {h["Symbol"]: h for h in hits}
+            merged = {h.get("Symbol") or h.get("Stock") or "": h for h in hits}
             for sym, active in mon._state["trigger_state"].items():
                 if not active:
                     continue
@@ -348,11 +382,11 @@ class UnifiedEngine:
     def _alert_symbols(self) -> list[str]:
         from screeners.opening_breakout import levels_ready as ob_ready
 
-        if "opening_breakout" not in self.monitors or not ob_ready():
-            return []
-
+        symbols: set[str] = set()
         with self._lock:
-            return [f"{s}.NS" for s in sorted(self.ob_cache)]
+            if "opening_breakout" in self.monitors and ob_ready():
+                symbols.update(self.ob_cache)
+        return [f"{s}.NS" for s in sorted(symbols)]
 
     def alert_poll(self) -> int:
         """Fast price check for desktop alerts; also upserts active symbols into the hit list."""
@@ -392,7 +426,7 @@ class UnifiedEngine:
         try:
             if incremental:
                 for m in self.module_names:
-                    if self._listing_active(m):
+                    if self._ui_scan_active(m):
                         self.monitors[m].begin_scan(total, "full")
 
             batches = self._chunks(tickers, FULL_BATCH_SIZE)
@@ -406,23 +440,24 @@ class UnifiedEngine:
                         aborted = True
                         break
                     ob_hits = fut.result()
-                    if self._listing_active("opening_breakout"):
+                    if self._ui_scan_active("opening_breakout"):
                         self._merge_hits(all_ob, ob_hits)
                     scanned += len(futures[fut])
-                    if incremental and self._listing_active("opening_breakout"):
+                    if incremental and self._ui_scan_active("opening_breakout"):
                         self._set_module_hits(
                             "opening_breakout", list(all_ob.values()), scanned,
                             len(self.ob_cache), total, "full",
                         )
 
             for m in self.module_names:
-                if not self._listing_active(m):
+                if not self._ui_scan_active(m):
                     with self.monitors[m]._lock:
                         self.monitors[m]._state["scanning"] = False
                     continue
-                self.monitors[m].end_scan(total, len(self.ob_cache), mode="full")
+                with_data = len(self.ob_cache) if m == "opening_breakout" else 0
+                self.monitors[m].end_scan(total, with_data, mode="full")
 
-            if self._listing_active("opening_breakout"):
+            if self._ui_scan_active("opening_breakout"):
                 self._set_module_hits(
                     "opening_breakout", list(all_ob.values()), total, len(self.ob_cache), total, "full",
                 )
@@ -441,47 +476,6 @@ class UnifiedEngine:
             for m in self.module_names
         }
 
-    def listing_refresh(self, tickers: list[str]) -> None:
-        """Slower hit-list update for the UI — scans full Nifty 500 universe."""
-        if not self._any_listing_active():
-            return
-
-        total = len(tickers)
-        all_ob: dict[str, dict] = {}
-
-        for m in self.module_names:
-            if self._listing_active(m):
-                self.monitors[m].begin_scan(total, "fast")
-
-        batches = self._chunks(tickers, FULL_BATCH_SIZE)
-        workers = min(FULL_WORKERS, len(batches))
-        scanned = 0
-
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(self._full_batch, b): b for b in batches}
-            for fut in as_completed(futures):
-                if self._scan_aborted():
-                    break
-                ob_hits = fut.result()
-                if self._listing_active("opening_breakout"):
-                    self._merge_hits(all_ob, ob_hits)
-                scanned += len(futures[fut])
-                if self._listing_active("opening_breakout"):
-                    self._set_module_hits(
-                        "opening_breakout", list(all_ob.values()), scanned,
-                        len(self.ob_cache), total, "fast",
-                    )
-
-        if self._listing_active("opening_breakout"):
-            self._set_module_hits(
-                "opening_breakout", list(all_ob.values()), total,
-                len(self.ob_cache), total, "fast",
-            )
-            self.monitors["opening_breakout"].end_scan(total, len(self.ob_cache), mode="fast")
-        elif "opening_breakout" in self.monitors:
-            with self.monitors["opening_breakout"]._lock:
-                self.monitors["opening_breakout"]._state["scanning"] = False
-
     def monitor_loop(self) -> None:
         from screeners.opening_breakout import IST, is_market_hours, levels_ready
 
@@ -496,8 +490,8 @@ class UnifiedEngine:
 
         print(
             f"🚀 Unified monitor — {len(tickers)} stocks | "
-            f"alerts every {ALERT_POLL_SECONDS}s | listing every {LISTING_FAST_SECONDS}s | "
-            f"full every {FULL_SCAN_SECONDS}s"
+            f"alerts every {ALERT_POLL_SECONDS}s | "
+            f"full cache every {FULL_SCAN_SECONDS}s | UI scan on demand"
         )
 
         while True:
@@ -510,7 +504,6 @@ class UnifiedEngine:
                     with self._lock:
                         self.ob_cache.clear()
                     self._last_full = 0
-                    self._last_listing = 0
                     last_day = today
 
                 if not is_market_hours():
@@ -532,9 +525,6 @@ class UnifiedEngine:
                     print(f"📡 Monitoring {cached}/{len(tickers)} stocks for alerts")
                 else:
                     self.alert_poll()
-                    if self._any_listing_active() and now - self._last_listing >= LISTING_FAST_SECONDS:
-                        self.listing_refresh(tickers)
-                        self._last_listing = time_mod.time()
 
             except Exception as exc:
                 for m in self.monitors.values():
@@ -571,17 +561,24 @@ def scan_universe(module_name: str, tickers: list[str], *, incremental: bool = T
     global _engine
     if _engine is None:
         _engine = UnifiedEngine([module_name])
+    mon = get_monitor(module_name)
+    mon.begin_ui_scan()
     start_monitor(module_name)
-    results = _engine.full_scan(tickers, incremental=incremental)
-    return results.get(module_name, [])
+    try:
+        results = _engine.full_scan(tickers, incremental=incremental)
+        return results.get(module_name, [])
+    finally:
+        mon.end_ui_scan()
 
 
 def stop_monitor(module_name: str) -> dict:
     mon = get_monitor(module_name)
     mon.stop()
+    mon.disable_list()
+    mon.clear_hits()
     if _engine:
         _engine.request_cancel(module_name)
-    print(f"⏹ [{module_name}] Listing paused (alerts still on)")
+    print(f"⏹ [{module_name}] List cleared (alerts still on)")
     return mon.get_status()
 
 
@@ -590,7 +587,7 @@ def start_monitor(module_name: str) -> dict:
     mon.start()
     if _engine:
         _engine.clear_cancel(module_name)
-    print(f"▶ [{module_name}] Listing resumed")
+    print(f"▶ [{module_name}] List active")
     return mon.get_status()
 
 

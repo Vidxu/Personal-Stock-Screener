@@ -11,9 +11,10 @@ from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import yfinance as yf
 
-NAME = "OR + Prev Day High Breakout (Live)"
+from market_data import download
+
+NAME = "OR + Prev Day High Breakout"
 MODULE = "opening_breakout"
 BATCH_SIZE = 60
 
@@ -174,6 +175,36 @@ def _session_high_close(intraday: pd.DataFrame) -> tuple[float | None, float | N
     return float(today_bars["High"].max()), float(today_bars.iloc[-1]["Close"])
 
 
+def row_from_ohlc(
+    cache: dict,
+    quote: dict,
+    *,
+    use_session_high: bool = False,
+) -> dict | None:
+    """Fast re-check using cached levels + batch OHLC quote."""
+    or_high = cache["_or_high"]
+    pd_high = cache["_pd_high"]
+    prev_close = cache.get("_prev_close")
+    price = quote.get("last_price") or quote.get("close")
+    if price is None:
+        return None
+    candle_high = quote.get("high") if use_session_high else quote.get("close")
+    if candle_high is None:
+        candle_high = price
+
+    breakout = candle_high > or_high and candle_high > pd_high
+    return {
+        "Symbol": cache["Symbol"],
+        "Price": round(float(price), 2),
+        "% change": _pct_change(float(price), prev_close) if prev_close else "—",
+        "Volume": 0,
+        "_breakout": breakout,
+        "_or_high": or_high,
+        "_pd_high": pd_high,
+        "_candle_high": float(candle_high),
+    }
+
+
 def row_from_cache(
     ticker: str,
     cache: dict,
@@ -253,15 +284,15 @@ def scan_tickers(tickers: list[str], on_progress=None) -> list[dict]:
             on_progress(start + len(batch), total)
 
         try:
-            intra = yf.download(
+            intra = download(
                 batch,
                 interval="15m",
-                period="5d",
+                period="1d",
                 group_by="ticker",
                 threads=True,
                 progress=False,
             )
-            daily = yf.download(
+            daily = download(
                 batch,
                 interval="1d",
                 period="10d",

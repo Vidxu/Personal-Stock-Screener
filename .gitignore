@@ -1,0 +1,6 @@
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+upstox_instruments_cache.json
+.DS_Store

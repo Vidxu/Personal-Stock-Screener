@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 import importlib
+import os
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 from ui import get_screener_list, render_dashboard_html
 from universe import get_nifty500_stocks
+
+
+def _inject_streamlit_secrets() -> None:
+    """Map Streamlit Cloud secrets into os.environ for market_data.py."""
+    try:
+        for key in (
+            "UPSTOX_ACCESS_TOKEN",
+            "UPSTOX_API_KEY",
+            "UPSTOX_API_SECRET",
+            "UPSTOX_REDIRECT_URI",
+        ):
+            if key in st.secrets:
+                os.environ[key] = str(st.secrets[key])
+    except Exception:
+        pass
 
 
 def _run_scan(module_name: str) -> dict:
@@ -18,11 +34,11 @@ def _run_scan(module_name: str) -> dict:
     return {
         "name": module.NAME,
         "results": results,
-        "live": module_name in {"opening_breakout"},
     }
 
 
 def run_streamlit_ui() -> None:
+    _inject_streamlit_secrets()
     st.set_page_config(
         page_title="Stock Screener",
         page_icon="📈",
@@ -62,7 +78,6 @@ def run_streamlit_ui() -> None:
                     "name": run_module,
                     "results": [],
                     "error": str(exc),
-                    "live": False,
                 }
         st.query_params.clear()
         st.rerun()

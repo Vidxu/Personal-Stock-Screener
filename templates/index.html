@@ -381,60 +381,6 @@
       border: 1px solid rgba(45, 212, 168, 0.2);
     }
 
-    .results-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .search-wrap {
-      position: relative;
-    }
-
-    .search-wrap svg {
-      position: absolute;
-      left: 10px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: var(--text-dim);
-      pointer-events: none;
-    }
-
-    .search-input {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      color: var(--text);
-      font-family: var(--font);
-      font-size: 0.82rem;
-      padding: 7px 12px 7px 32px;
-      width: 200px;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-
-    .search-input:focus { border-color: var(--border-focus); }
-    .search-input::placeholder { color: var(--text-dim); }
-
-    .export-btn {
-      background: var(--bg-elevated);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      color: var(--text-muted);
-      font-family: var(--font);
-      font-size: 0.78rem;
-      font-weight: 500;
-      padding: 7px 12px;
-      cursor: pointer;
-      transition: border-color 0.15s, color 0.15s;
-      white-space: nowrap;
-    }
-
-    .export-btn:hover {
-      border-color: var(--border-focus);
-      color: var(--accent);
-    }
-
     .results-body {
       flex: 1;
       overflow: auto;
@@ -626,25 +572,20 @@
       <p class="sidebar-label">Screeners</p>
       <div class="sidebar" id="sidebar">
         {% for s in screeners %}
-        <div class="screener-card{% if s.live %} live-card{% endif %}"
+        <div class="screener-card"
              id="card-{{ s.module }}"
              data-module="{{ s.module }}"
-             data-name="{{ s.name }}"
-             data-live="{{ s.live | string | lower }}">
+             data-name="{{ s.name }}">
           <div class="card-top">
             <div class="card-name">{{ s.name }}</div>
-            {% if s.live %}
-            <span class="live-pill"><span class="live-dot"></span>Live</span>
-            {% else %}
             <span class="card-icon" aria-hidden="true">●</span>
-            {% endif %}
           </div>
-          <div class="card-status" id="status-{{ s.module }}">{% if s.live %}Monitoring in background…{% else %}Not run yet{% endif %}</div>
+          <div class="card-status" id="status-{{ s.module }}">Not run yet</div>
           <div class="card-actions">
             <button class="run-btn" id="btn-{{ s.module }}">
-              <span aria-hidden="true">{% if s.live %}📋{% else %}▶{% endif %}</span> {% if s.live %}Show list{% else %}Run scan{% endif %}
+              <span aria-hidden="true">🔍</span> Scan
             </button>
-            <button class="stop-btn" id="stop-{{ s.module }}" title="Stop listing scan" aria-label="Stop listing scan">■</button>
+            <button class="stop-btn" id="stop-{{ s.module }}" title="Stop scan" aria-label="Stop scan">✕</button>
           </div>
         </div>
         {% endfor %}
@@ -655,7 +596,7 @@
       <div class="state-box">
         <div class="state-icon" aria-hidden="true">🔍</div>
         <p class="state-title">No screener selected</p>
-        <p class="state-desc">Pick a screener from the left panel and hit <strong>Run scan</strong> to screen the Nifty 500 universe.</p>
+        <p class="state-desc">Pick a screener from the left panel and hit <strong>Scan</strong> to screen the Nifty 500 universe.</p>
       </div>
     </main>
   </div>
@@ -668,13 +609,11 @@
 
   const cache = {};
   let activeModule = null;
-  let activeIsLive = false;
   let sortCol = null;
   let sortAsc = true;
-  let livePollTimer = null;
   const scanAbortControllers = {};
 
-  const TICKER_KEYS = ['symbol', 'ticker', 'Symbol', 'Ticker', 'SYMBOL'];
+  const TICKER_KEYS = ['symbol', 'ticker', 'Symbol', 'Ticker', 'SYMBOL', 'Stock'];
   const NUMERIC_HINTS = ['price', 'change', 'volume', 'cap', 'pe', 'ratio', 'pct', '%', 'rsi', 'ma', 'high', 'low', 'open', 'close'];
   const COLUMN_ORDER = {
     opening_breakout: ['Symbol', 'Price', '% change', 'Volume'],
@@ -725,129 +664,24 @@
       </div>`;
   }
 
-  function stopLivePoll() {
-    if (livePollTimer) {
-      clearInterval(livePollTimer);
-      livePollTimer = null;
-    }
-  }
-
-  function liveStatusHTML(st) {
-    if (!st) return '';
-    if (st.stopped) {
-      return `<div class="live-status-bar">
-        <span class="live-pill"><span class="live-dot"></span>Live</span>
-        <span class="off">Listing paused</span> · Alerts <strong>on</strong> · click <strong>Show list</strong> to refresh results
-      </div>`;
-    }
-    const market = st.market_open
-      ? '<strong>Market open</strong>'
-      : '<span class="off">Market closed</span>';
-    const ready = st.levels_ready ? 'OR levels set' : 'Waiting for 9:30 AM IST…';
-    const mode = st.scan_mode === 'alert'
-      ? `Alerts · ${st.alert_poll_seconds || 6}s`
-      : st.scan_mode === 'fast'
-        ? 'Listing refresh'
-        : st.scan_mode === 'full'
-          ? 'Full refresh'
-          : 'Idle';
-    const last = st.scan_mode === 'alert' && st.last_alert_poll
-      ? `Last alert check: ${new Date(st.last_alert_poll).toLocaleTimeString()}`
-      : st.scan_mode === 'fast' && st.last_fast_scan
-        ? `Last listing: ${new Date(st.last_fast_scan).toLocaleTimeString()}`
-        : st.last_scan
-          ? `Last scan: ${new Date(st.last_scan).toLocaleTimeString()}`
-          : 'Starting…';
-    const progress = st.scanning && st.total
-      ? ` · Scanning <strong>${st.scanned}/${st.total}</strong>`
-      : '';
-    const coverage = st.with_data != null && st.total
-      ? ` · Monitoring <strong>${st.with_data}/${st.total}</strong> Nifty 500 stocks`
-      : '';
-    const alertNote = st.baseline_done === false && st.scanning
-      ? ' · <span class="off">Setting alert baseline…</span>'
-      : st.baseline_done
-        ? ' · Alerts <strong>on</strong> for new crossovers'
-        : '';
-    return `<div class="live-status-bar">
-      <span class="live-pill"><span class="live-dot"></span>Live</span>
-      ${market} · ${ready} · ${mode} · ${last}${progress}${coverage}${alertNote} · <strong>${st.hits_count}</strong> breakout${st.hits_count !== 1 ? 's' : ''}
-    </div>`;
-  }
-
-  async function fetchLiveHits(module, name, filter = '') {
-    if (window.STREAMLIT_MODE) return;
-    try {
-      const res = await fetch(`/api/live/${module}/hits`);
-      const data = await res.json();
-      const st = data.status;
-      const statusEl = document.getElementById(`status-${module}`);
-      const card = document.getElementById(`card-${module}`);
-      if (statusEl && card && !card.classList.contains('loading')) {
-        if (st.stopped) {
-          statusEl.textContent = 'Listing paused · alerts on';
-          card.classList.add('stopped');
-        } else {
-          card.classList.remove('stopped');
-          if (st.scanning) {
-            statusEl.innerHTML = `<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning ${st.scanned}/${st.total}…`;
-          } else {
-            statusEl.textContent = `${st.hits_count} live breakout${st.hits_count !== 1 ? 's' : ''} · monitoring`;
-          }
-        }
-      }
-      cache[module] = { name: data.name, results: data.results, live: true, status: st };
-      if (activeModule === module) {
-        renderResults(module, data.name, data.results, filter, st);
-      }
-    } catch {
-      /* keep polling */
-    }
-  }
-
-  function startLivePoll(module, name) {
-    if (window.STREAMLIT_MODE) return;
-    stopLivePoll();
-    fetchLiveHits(module, name);
-    livePollTimer = setInterval(() => {
-      if (activeModule === module) {
-        fetchLiveHits(module, name, document.getElementById('result-search')?.value || '');
-      }
-    }, 3000);
-  }
-
-  function selectScreener(module, name, isLive = false) {
+  function selectScreener(module, name) {
     activeModule = module;
-    activeIsLive = isLive;
-    stopLivePoll();
     document.querySelectorAll('.screener-card').forEach(c => c.classList.remove('active'));
     const card = document.getElementById(`card-${module}`);
     if (!card.classList.contains('loading')) card.classList.add('active');
-
-    if (isLive) {
-      document.getElementById('results-panel').innerHTML = stateHTML({
-        icon: '🔴',
-        title: name,
-        desc: window.STREAMLIT_MODE
-          ? 'On-demand scans work here. <strong>Live monitoring and desktop alerts</strong> require running <code>python run_local.py</code> on your Mac.'
-          : 'Live monitor is running in the background. Click <strong>Show list</strong> to scan now, or wait — results stream in automatically.'
-      });
-      if (!window.STREAMLIT_MODE) startLivePoll(module, name);
-      return;
-    }
 
     if (cache[module]) {
       renderResults(module, cache[module].name, cache[module].results);
     } else {
       document.getElementById('results-panel').innerHTML = stateHTML({
-        icon: '▶',
+        icon: '🔍',
         title: name,
-        desc: 'Ready to scan. Click <strong>Run scan</strong> to screen Nifty 500 stocks with this strategy.'
+        desc: 'Ready to scan. Click <strong>Scan</strong> to screen Nifty 500 stocks with this strategy.'
       });
     }
   }
 
-  async function stopScreener(module, name, isLive = false) {
+  async function stopScreener(module, name) {
     const stopBtn = document.getElementById(`stop-${module}`);
     const btn = document.getElementById(`btn-${module}`);
     const status = document.getElementById(`status-${module}`);
@@ -858,54 +692,33 @@
       scanAbortControllers[module] = null;
     }
 
-    if (isLive) {
-      try {
-        if (!window.STREAMLIT_MODE) await fetch(`/api/live/${module}/stop`, { method: 'POST' });
-      } catch {
-        status.textContent = 'Stop failed';
-        return;
-      }
-    }
-
     card.classList.remove('loading');
     card.classList.add('stopped');
-    status.textContent = isLive ? 'Listing paused · alerts on' : 'Stopped';
+    status.textContent = 'Stopped';
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = isLive
-        ? '<span aria-hidden="true">📋</span> Show list'
-        : '<span aria-hidden="true">↻</span> Re-run';
+      btn.innerHTML = '<span aria-hidden="true">🔍</span> Scan';
     }
     if (stopBtn) stopBtn.disabled = true;
 
-    if (activeModule === module && isLive) {
-      fetchLiveHits(module, name);
-    }
+    delete cache[module];
 
     if (activeModule === module) {
-      const cached = cache[module];
-      if (cached?.results) {
-        renderResults(module, cached.name, cached.results, '', { ...cached.status, stopped: true });
-      } else {
-        document.getElementById('results-panel').innerHTML = stateHTML({
-          icon: isLive ? '🔴' : '⏹',
-          title: name,
-          desc: isLive
-            ? 'Listing scan is <strong>paused</strong>. Desktop <strong>alerts are still active</strong> — click <strong>Show list</strong> to refresh the table.'
-            : 'Scan stopped. Click <strong>Re-run</strong> to scan again.'
-        });
-      }
+      document.getElementById('results-panel').innerHTML = stateHTML({
+        icon: '⏹',
+        title: name,
+        desc: 'Scan stopped. Click <strong>Scan</strong> to run again.'
+      });
     }
   }
 
-  async function runScreener(module, name, isLive = false) {
+  async function runScreener(module, name) {
     const btn = document.getElementById(`btn-${module}`);
     const status = document.getElementById(`status-${module}`);
     const card = document.getElementById(`card-${module}`);
     const stopBtn = document.getElementById(`stop-${module}`);
 
     activeModule = module;
-    activeIsLive = isLive;
     card.classList.remove('stopped');
     if (stopBtn) stopBtn.disabled = false;
 
@@ -915,14 +728,7 @@
     scanAbortControllers[module] = new AbortController();
     const { signal } = scanAbortControllers[module];
 
-    if (isLive) {
-      try {
-        if (!window.STREAMLIT_MODE) await fetch(`/api/live/${module}/start`, { method: 'POST' });
-      } catch { /* resume best-effort */ }
-    }
-
     if (window.STREAMLIT_MODE) {
-      stopLivePoll();
       card.classList.add('active');
       document.querySelectorAll('.screener-card').forEach(c => {
         if (c.id !== `card-${module}`) c.classList.remove('active');
@@ -942,52 +748,6 @@
       return;
     }
 
-    if (isLive) {
-      stopLivePoll();
-      card.classList.add('active');
-      document.querySelectorAll('.screener-card').forEach(c => {
-        if (c.id !== `card-${module}`) c.classList.remove('active');
-      });
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Scanning…';
-      card.classList.add('loading');
-      status.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;margin-right:6px"></span>Scanning Nifty 500…';
-      sortCol = null;
-      document.getElementById('results-panel').innerHTML = stateHTML({
-        loading: true,
-        title: `Scanning ${name}`,
-        desc: 'Checking Nifty 500 stocks. <strong>Results appear as batches complete</strong>.'
-      });
-      startLivePoll(module, name);
-
-      try {
-        const res = await fetch(`/api/run/${module}`, { signal });
-        const data = await res.json();
-        if (signal.aborted) return;
-        if (data.error) {
-          status.textContent = 'Error';
-          document.getElementById('results-panel').innerHTML =
-            `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Scan failed</p><p class="state-desc">${data.error}</p></div>`;
-        } else {
-          const count = data.results.length;
-          status.textContent = `${count} breakout${count !== 1 ? 's' : ''} · just now`;
-          cache[module] = data;
-          renderResults(module, data.name, data.results, '', cache[module].status);
-        }
-      } catch (err) {
-        if (err.name === 'AbortError') return;
-        status.textContent = 'Failed';
-      }
-
-      if (signal.aborted) return;
-      btn.disabled = false;
-      btn.innerHTML = '<span aria-hidden="true">📋</span> Show list';
-      card.classList.remove('loading');
-      scanAbortControllers[module] = null;
-      return;
-    }
-
-    stopLivePoll();
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px"></span> Running…';
     card.classList.remove('active');
@@ -1026,7 +786,7 @@
 
     if (signal.aborted) return;
     btn.disabled = false;
-    btn.innerHTML = '<span aria-hidden="true">↻</span> Re-run';
+    btn.innerHTML = '<span aria-hidden="true">🔍</span> Scan';
     card.classList.remove('loading');
     card.classList.add('active');
     scanAbortControllers[module] = null;
@@ -1047,49 +807,24 @@
     });
   }
 
-  function exportCSV(module, results) {
-    if (!results.length) return;
-    const cols = getColumns(module, results);
-    const rows = results.map(r => cols.map(c => {
-      const v = r[c] ?? '';
-      return `"${String(v).replace(/"/g, '""')}"`;
-    }).join(','));
-    const csv = [cols.join(','), ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `screener-results-${Date.now()}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-
-  function renderResults(module, name, results, filter = '', liveStatus = null) {
+  function renderResults(module, name, results) {
     const panel = document.getElementById('results-panel');
     sortCol = sortCol || null;
-    const liveBar = liveStatus ? liveStatusHTML(liveStatus) : '';
 
     if (!results || results.length === 0) {
       panel.innerHTML = `
-        ${liveBar}
         <div class="results-header">
           <div class="results-title">${name}</div>
         </div>
         <div class="state-box">
           <div class="state-icon">∅</div>
           <p class="state-title">No matches</p>
-          <p class="state-desc">${liveStatus ? 'No breakouts yet. The live monitor is running — you will get a desktop alert as soon as a stock crosses the opening-range high and previous-day high.' : 'No stocks matched this screener right now. Try again later or adjust the screener logic.'}</p>
+          <p class="state-desc">No stocks matched this screener right now. Try again later or adjust the screener logic.</p>
         </div>`;
       return;
     }
 
-    let display = sortCol ? sortResults(results, sortCol, sortAsc) : results;
-
-    if (filter) {
-      const q = filter.toLowerCase();
-      display = display.filter(r =>
-        Object.values(r).some(v => String(v ?? '').toLowerCase().includes(q))
-      );
-    }
+    const display = sortCol ? sortResults(results, sortCol, sortAsc) : results;
 
     const cols = getColumns(module, results);
     const thead = cols.map(c => {
@@ -1099,28 +834,18 @@
       return `<th class="${num ? 'num' : ''}${sorted ? ' sorted' : ''}" data-col="${c}">${c}<span class="sort-icon">${arrow}</span></th>`;
     }).join('');
 
-    const tbody = display.length === 0
-      ? `<tr><td colspan="${cols.length}" class="no-match">No rows match your search.</td></tr>`
-      : display.map(r =>
-          `<tr>${cols.map(c => {
-            const ticker = isTickerCol(c);
-            const num = isNumericCol(c, r[c]);
-            const cls = [ticker ? 'ticker' : '', num ? 'num' : ''].filter(Boolean).join(' ');
-            return `<td class="${cls}">${formatCell(c, r[c])}</td>`;
-          }).join('')}</tr>`
-        ).join('');
+    const tbody = display.map(r =>
+      `<tr>${cols.map(c => {
+        const ticker = isTickerCol(c);
+        const num = isNumericCol(c, r[c]);
+        const cls = [ticker ? 'ticker' : '', num ? 'num' : ''].filter(Boolean).join(' ');
+        return `<td class="${cls}">${formatCell(c, r[c])}</td>`;
+      }).join('')}</tr>`
+    ).join('');
 
     panel.innerHTML = `
-      ${liveBar}
       <div class="results-header">
         <div class="results-title">${name} <span class="badge">${results.length} stock${results.length !== 1 ? 's' : ''}</span></div>
-        <div class="results-toolbar">
-          <div class="search-wrap">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
-            <input class="search-input" type="search" placeholder="Filter results…" value="${filter}" id="result-search">
-          </div>
-          <button class="export-btn" id="export-btn">↓ Export CSV</button>
-        </div>
       </div>
       <div class="results-body">
         <div class="table-wrap">
@@ -1131,23 +856,16 @@
         </div>
       </div>`;
 
-    document.getElementById('result-search').addEventListener('input', e => {
-      renderResults(module, name, results, e.target.value, liveStatus);
-    });
-
-    document.getElementById('export-btn').addEventListener('click', () => exportCSV(module, results));
-
     panel.querySelectorAll('th[data-col]').forEach(th => {
       th.addEventListener('click', () => {
         const col = th.dataset.col;
         if (sortCol === col) sortAsc = !sortAsc;
         else { sortCol = col; sortAsc = true; }
-        renderResults(module, name, results, document.getElementById('result-search')?.value || '', liveStatus);
+        renderResults(module, name, results);
       });
     });
   }
 
-  // Auto-select live screener on load if present
   document.addEventListener('DOMContentLoaded', () => {
     if (window.__SCAN_CACHE__) {
       Object.entries(window.__SCAN_CACHE__).forEach(([module, data]) => {
@@ -1158,15 +876,14 @@
     document.querySelectorAll('.screener-card').forEach(card => {
       const module = card.dataset.module;
       const name = card.dataset.name;
-      const isLive = card.dataset.live === 'true';
 
-      card.addEventListener('click', () => selectScreener(module, name, isLive));
+      card.addEventListener('click', () => selectScreener(module, name));
 
       const btn = card.querySelector('.run-btn');
       if (btn) {
         btn.addEventListener('click', e => {
           e.stopPropagation();
-          runScreener(module, name, isLive);
+          runScreener(module, name);
         });
       }
 
@@ -1174,28 +891,24 @@
       if (stopBtn) {
         stopBtn.addEventListener('click', e => {
           e.stopPropagation();
-          stopScreener(module, name, isLive);
+          stopScreener(module, name);
         });
       }
     });
 
-    const liveCard = document.querySelector('.screener-card[data-live="true"]');
-    if (window.STREAMLIT_MODE && window.__ACTIVE_MODULE__ && cache[window.__ACTIVE_MODULE__]) {
+    if (window.__ACTIVE_MODULE__ && cache[window.__ACTIVE_MODULE__]) {
       const module = window.__ACTIVE_MODULE__;
       const card = document.getElementById(`card-${module}`);
       if (card) {
         const name = card.dataset.name;
-        const isLive = card.dataset.live === 'true';
         const data = cache[module];
-        selectScreener(module, name, isLive);
+        selectScreener(module, name);
         const statusEl = document.getElementById(`status-${module}`);
         const btn = document.getElementById(`btn-${module}`);
         card.classList.remove('loading');
         if (btn) {
           btn.disabled = false;
-          btn.innerHTML = isLive
-            ? '<span aria-hidden="true">📋</span> Show list'
-            : '<span aria-hidden="true">↻</span> Re-run';
+          btn.innerHTML = '<span aria-hidden="true">🔍</span> Scan';
         }
         if (data.error) {
           if (statusEl) statusEl.textContent = 'Error';
@@ -1208,15 +921,6 @@
           }
           renderResults(module, data.name, data.results);
         }
-      }
-    } else if (liveCard) {
-      const module = liveCard.dataset.module;
-      const name = liveCard.dataset.name;
-      if (window.STREAMLIT_MODE && cache[module]?.results) {
-        selectScreener(module, name, true);
-        renderResults(module, cache[module].name, cache[module].results);
-      } else {
-        selectScreener(module, name, true);
       }
     }
   });
