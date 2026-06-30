@@ -4,10 +4,17 @@ from universe import get_nifty500_stocks
 import importlib
 import os
 
+from runtime_env import live_alerts_enabled
+
 app = Flask(__name__)
 CORS(app)
 
 PORT = int(os.environ.get("PORT", 5001))
+LIVE_MODULES = {"opening_breakout"}
+
+
+def _live_alerts_enabled() -> bool:
+    return live_alerts_enabled()
 
 
 def get_all_screeners():
@@ -38,24 +45,70 @@ def dashboard():
 @app.route("/api/run/<module_name>")
 def run_one(module_name):
     try:
+        from market_data import UpstoxConfigError
+
         module = importlib.import_module(f"screeners.{module_name}")
         tickers = get_nifty500_stocks()
         results = module.run(tickers)
-        return jsonify({"name": module.NAME, "results": results})
+
+        if module_name in LIVE_MODULES and _live_alerts_enabled():
+            from live_registry import get_monitor, start_monitor
+
+            mon = get_monitor(module_name)
+            start_monitor(module_name)
+            mon.seed_hits(results, total=len(tickers))
+
+        return jsonify({
+            "name": module.NAME,
+            "results": results,
+            "live": module_name in LIVE_MODULES and _live_alerts_enabled(),
+        })
+    except UpstoxConfigError as e:
+        return jsonify({"error": str(e)}), 401
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/live/<module_name>/status")
+def live_status(module_name):
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Not a live screener"}), 404
+    from live_registry import get_status
+
+    return jsonify(get_status(module_name))
+
+
+@app.route("/api/live/<module_name>/hits")
+def live_hits(module_name):
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Not a live screener"}), 404
+    from live_registry import get_hits
+
+    return jsonify({"hits": get_hits(module_name)})
+
+
+@app.route("/api/live/<module_name>/stop", methods=["POST"])
+def live_stop(module_name):
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Not a live screener"}), 404
+    from live_registry import stop_monitor
+
+    return jsonify(stop_monitor(module_name))
+
+
+@app.route("/api/live/<module_name>/start", methods=["POST"])
+def live_start(module_name):
+    if module_name not in LIVE_MODULES:
+        return jsonify({"error": "Not a live screener"}), 404
+    from live_registry import start_monitor
+
+    return jsonify(start_monitor(module_name))
+
+
 def _is_streamlit_runtime() -> bool:
-    """True on Streamlit Cloud / `streamlit run` — not for plain `python app.py`."""
-    for var in (
-        "STREAMLIT_SERVER_PORT",
-        "STREAMLIT_RUNTIME_ENVIRONMENT",
-        "STREAMLIT_CLOUD_ENV",
-    ):
-        if os.environ.get(var):
-            return True
-    return "/mount/src/" in os.path.abspath(__file__)
+    from runtime_env import is_streamlit_runtime
+
+    return is_streamlit_runtime()
 
 
 if __name__ == "__main__":

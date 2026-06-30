@@ -572,20 +572,29 @@
       <p class="sidebar-label">Screeners</p>
       <div class="sidebar" id="sidebar">
         {% for s in screeners %}
-        <div class="screener-card"
+        <div class="screener-card{% if s.live %} live-card{% endif %}"
              id="card-{{ s.module }}"
              data-module="{{ s.module }}"
-             data-name="{{ s.name }}">
+             data-name="{{ s.name }}"
+             data-live="{{ 'true' if s.live else 'false' }}">
           <div class="card-top">
             <div class="card-name">{{ s.name }}</div>
+            {% if s.live %}
+            <span class="live-pill" title="Telegram alerts on"><span class="live-dot"></span>Live</span>
+            {% else %}
             <span class="card-icon" aria-hidden="true">●</span>
+            {% endif %}
           </div>
-          <div class="card-status" id="status-{{ s.module }}">Not run yet</div>
+          <div class="card-status" id="status-{{ s.module }}">{% if s.live %}Monitoring · press Scan{% else %}Not run yet{% endif %}</div>
           <div class="card-actions">
             <button class="run-btn" id="btn-{{ s.module }}">
               <span aria-hidden="true">🔍</span> Scan
             </button>
+            {% if s.live %}
+            <button class="stop-btn" id="stop-{{ s.module }}" title="Clear list" aria-label="Clear list">✕</button>
+            {% else %}
             <button class="stop-btn" id="stop-{{ s.module }}" title="Stop scan" aria-label="Stop scan">✕</button>
+            {% endif %}
           </div>
         </div>
         {% endfor %}
@@ -606,6 +615,7 @@
   window.STREAMLIT_MODE = {{ streamlit_mode | default(false) | tojson }};
   window.__SCAN_CACHE__ = {{ scan_cache_json | default('{}') | safe }};
   window.__ACTIVE_MODULE__ = {{ active_module | default('') | tojson }};
+  window.__LIVE_STATE__ = {{ live_state_json | default('{}') | safe }};
 
   const cache = {};
   let activeModule = null;
@@ -618,6 +628,130 @@
   const COLUMN_ORDER = {
     opening_breakout: ['Symbol', 'Price', '% change', 'Volume'],
   };
+
+  const LIVE_MODULES = new Set(
+    [...document.querySelectorAll('.screener-card[data-live="true"]')].map(c => c.dataset.module)
+  );
+  const liveStatusCache = {};
+  let livePollTimer = null;
+
+  function isLiveModule(module) {
+    return LIVE_MODULES.has(module);
+  }
+
+  function liveStatusHTML(st) {
+    if (!st) return '';
+    const market = st.market_open
+      ? '<strong>Market open</strong>'
+      : '<span class="off">Market closed</span>';
+    const ready = st.levels_ready ? 'OR levels set' : 'Waiting for 9:30 AM IST…';
+    const poll = st.alert_poll_seconds ? `alerts every ${st.alert_poll_seconds}s` : 'alerts on';
+    const listNote = (st.stopped || !st.list_enabled)
+      ? ' · press <strong>Scan</strong> to load results'
+      : '';
+    const err = st.last_error
+      ? ` · <span class="off">⚠ ${st.last_error}</span>`
+      : '';
+    return `<div class="live-status-bar">
+      <span class="live-pill"><span class="live-dot"></span>Live</span>
+      ${market} · ${ready} · ${poll} · Telegram alerts <strong>on</strong>${listNote}${err}
+    </div>`;
+  }
+
+  function applyStreamlitLiveState() {
+    if (!window.STREAMLIT_MODE || !window.__LIVE_STATE__) return;
+
+    for (const [module, data] of Object.entries(window.__LIVE_STATE__)) {
+      const st = data.status;
+      const hits = data.hits || [];
+      if (!st) continue;
+
+      liveStatusCache[module] = st;
+      updateLiveCardStatus(module, st);
+
+      if (st.list_enabled && !st.stopped) {
+        const card = document.getElementById(`card-${module}`);
+        const name = card ? card.dataset.name : module;
+        if (!cache[module]) {
+          cache[module] = { name, results: hits, live: true };
+        } else {
+          cache[module].results = hits;
+        }
+        if (activeModule === module) {
+          renderResults(module, name, hits, liveStatusHTML(st));
+        }
+      }
+    }
+  }
+
+  async function fetchLiveStatus(module) {
+    try {
+      const res = await fetch(`/api/live/${module}/status`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  async function fetchLiveHits(module) {
+    try {
+      const res = await fetch(`/api/live/${module}/hits`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.hits || [];
+    } catch {
+      return null;
+    }
+  }
+
+  function updateLiveCardStatus(module, st) {
+    const status = document.getElementById(`status-${module}`);
+    const card = document.getElementById(`card-${module}`);
+    if (!status || !st) return;
+    if (card && card.classList.contains('loading')) return;
+
+    const hits = st.hits_count ?? 0;
+    if (st.list_enabled && !st.stopped) {
+      status.textContent = `${hits} breakout${hits !== 1 ? 's' : ''} · monitoring`;
+    } else {
+      status.textContent = 'Monitoring · press Scan';
+    }
+  }
+
+  async function pollLiveModules() {
+    for (const module of LIVE_MODULES) {
+      const st = await fetchLiveStatus(module);
+      if (!st) continue;
+      liveStatusCache[module] = st;
+      updateLiveCardStatus(module, st);
+
+      if (activeModule === module && st.list_enabled && !st.stopped) {
+        const hits = await fetchLiveHits(module);
+        if (hits && cache[module]) {
+          const prev = cache[module].results.length;
+          cache[module].results = hits;
+          if (hits.length !== prev || document.querySelector('.live-status-bar')) {
+            const card = document.getElementById(`card-${module}`);
+            renderResults(module, cache[module].name, hits, liveStatusHTML(st));
+          }
+        } else if (activeModule === module && !cache[module]) {
+          const panel = document.getElementById('results-panel');
+          const bar = liveStatusHTML(st);
+          if (panel && !panel.querySelector('.live-status-bar')) {
+            panel.innerHTML = bar + panel.innerHTML;
+          }
+        }
+      }
+    }
+  }
+
+  function startLivePolling() {
+    if (!LIVE_MODULES.size || window.STREAMLIT_MODE) return;
+    if (livePollTimer) clearInterval(livePollTimer);
+    pollLiveModules();
+    livePollTimer = setInterval(pollLiveModules, 8000);
+  }
 
   function getColumns(module, results) {
     const m = module || activeModule;
@@ -672,6 +806,12 @@
 
     if (cache[module]) {
       renderResults(module, cache[module].name, cache[module].results);
+    } else if (isLiveModule(module) && liveStatusCache[module]) {
+      document.getElementById('results-panel').innerHTML = liveStatusHTML(liveStatusCache[module]) + stateHTML({
+        icon: '🔔',
+        title: name,
+        desc: 'Telegram alerts are running. Press <strong>Scan</strong> to load current breakouts.'
+      });
     } else {
       document.getElementById('results-panel').innerHTML = stateHTML({
         icon: '🔍',
@@ -686,6 +826,31 @@
     const btn = document.getElementById(`btn-${module}`);
     const status = document.getElementById(`status-${module}`);
     const card = document.getElementById(`card-${module}`);
+
+    if (isLiveModule(module) && window.STREAMLIT_MODE) {
+      const url = new URL(window.top.location.href);
+      url.searchParams.set('stop', module);
+      window.top.location.href = url.toString();
+      return;
+    }
+
+    if (isLiveModule(module) && !window.STREAMLIT_MODE) {
+      try {
+        await fetch(`/api/live/${module}/stop`, { method: 'POST' });
+      } catch { /* ignore */ }
+      delete cache[module];
+      card.classList.remove('loading', 'stopped');
+      status.textContent = 'Monitoring · press Scan';
+      if (activeModule === module) {
+        const st = liveStatusCache[module];
+        document.getElementById('results-panel').innerHTML = stateHTML({
+          icon: '🔔',
+          title: name,
+          desc: 'List cleared. Telegram alerts keep running — press <strong>Scan</strong> to reload breakouts.'
+        }) + (st ? liveStatusHTML(st) : '');
+      }
+      return;
+    }
 
     if (scanAbortControllers[module]) {
       scanAbortControllers[module].abort();
@@ -807,12 +972,14 @@
     });
   }
 
-  function renderResults(module, name, results) {
+  function renderResults(module, name, results, liveBar) {
     const panel = document.getElementById('results-panel');
     sortCol = sortCol || null;
+    const statusBar = liveBar ?? (isLiveModule(module) ? liveStatusHTML(liveStatusCache[module]) : '');
 
     if (!results || results.length === 0) {
       panel.innerHTML = `
+        ${statusBar}
         <div class="results-header">
           <div class="results-title">${name}</div>
         </div>
@@ -844,6 +1011,7 @@
     ).join('');
 
     panel.innerHTML = `
+      ${statusBar}
       <div class="results-header">
         <div class="results-title">${name} <span class="badge">${results.length} stock${results.length !== 1 ? 's' : ''}</span></div>
       </div>
@@ -922,6 +1090,11 @@
           renderResults(module, data.name, data.results);
         }
       }
+    }
+
+    startLivePolling();
+    if (window.STREAMLIT_MODE) {
+      applyStreamlitLiveState();
     }
   });
 </script>

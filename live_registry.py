@@ -14,9 +14,9 @@ import time as time_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+from alert_templates import or_breakout_alert
 from market_data import download, fetch_ohlc_batch
 
-from alert_notify import alert
 from universe import get_nifty500_stocks
 
 ALERT_POLL_SECONDS = 10
@@ -135,6 +135,18 @@ class MonitorState:
         with self._lock:
             self._state["hits"] = []
 
+    def seed_hits(self, hits: list[dict], *, total: int) -> None:
+        """Load on-demand scan results into the live hit list."""
+        with self._lock:
+            self._state["hits"] = list(hits)
+            self._state["list_enabled"] = True
+            self._state["stopped"] = False
+            self._state["scanned"] = total
+            self._state["with_data"] = total
+            self._state["total"] = total
+            self._state["last_scan"] = datetime.now().isoformat(timespec="seconds")
+            self._state["scanning"] = False
+
     def enable_list(self) -> None:
         with self._lock:
             self._state["list_enabled"] = True
@@ -158,16 +170,20 @@ class MonitorState:
             return bool(self._state.get("list_enabled")) and not self._state.get("stopped", False)
 
     def _send_alert(self, sym: str, row: dict, meta: dict) -> None:
-        msg = (
-            f"{sym} crossed OR high ₹{meta.get('_or_high', '?')} "
-            f"& prev-day high ₹{meta.get('_pd_high', '?')}"
-        )
-        title = f"Breakout: {sym}"
+        rendered = or_breakout_alert(sym, meta)
+        print(f"🔔 [{self.module_name}] Alert: {sym} — {rendered.message}")
 
         threading.Thread(
-            target=alert, args=(title, msg), kwargs={"sound_seconds": 2.5}, daemon=True
+            target=self._deliver_alert,
+            args=(rendered,),
+            daemon=True,
         ).start()
-        print(f"🔔 [{self.module_name}] Alert: {sym}")
+
+    @staticmethod
+    def _deliver_alert(rendered) -> None:
+        from alert_messaging import dispatch_alert
+
+        dispatch_alert(rendered)
 
     def process_row(self, row: dict | None) -> bool:
         if row is None:
@@ -325,8 +341,16 @@ class UnifiedEngine:
 
         ob_hits: list[dict] = []
 
+        from market_data import UpstoxConfigError, fetch_ohlc_batch
+
         try:
             quotes = fetch_ohlc_batch(batch, interval="I1")
+        except UpstoxConfigError as exc:
+            for m in self.monitors.values():
+                with m._lock:
+                    m._state["last_error"] = str(exc)
+            print(f"⚠️  {exc}")
+            return ob_hits
         except Exception:
             return ob_hits
 
@@ -389,7 +413,7 @@ class UnifiedEngine:
         return [f"{s}.NS" for s in sorted(symbols)]
 
     def alert_poll(self) -> int:
-        """Fast price check for desktop alerts; also upserts active symbols into the hit list."""
+        """Fast price check for Telegram alerts; also upserts active symbols into the hit list."""
         tickers = self._alert_symbols()
         if not tickers:
             return 0
@@ -414,8 +438,8 @@ class UnifiedEngine:
 
         return len(tickers)
 
-    def full_scan(self, tickers: list[str], *, incremental: bool = True) -> dict[str, list[dict]]:
-        if not self._scan_lock.acquire(blocking=False):
+    def full_scan(self, tickers: list[str], *, incremental: bool = True, wait: bool = False) -> dict[str, list[dict]]:
+        if not self._scan_lock.acquire(blocking=wait):
             return {m: self.monitors[m].get_hits() for m in self.module_names}
 
         total = len(tickers)
@@ -565,7 +589,7 @@ def scan_universe(module_name: str, tickers: list[str], *, incremental: bool = T
     mon.begin_ui_scan()
     start_monitor(module_name)
     try:
-        results = _engine.full_scan(tickers, incremental=incremental)
+        results = _engine.full_scan(tickers, incremental=incremental, wait=True)
         return results.get(module_name, [])
     finally:
         mon.end_ui_scan()

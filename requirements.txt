@@ -1,6 +1,6 @@
 flask>=3.0.0
 flask-cors>=4.0.0
-streamlit>=1.32.0
+streamlit>=1.37.0
 pandas>=2.0.0
 # yfinance replaced by Upstox — see market_data.py
 requests>=2.31.0

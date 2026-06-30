@@ -13,6 +13,9 @@ from universe import get_nifty500_stocks
 _flask = Flask(__name__, template_folder="templates")
 
 
+LIVE_MODULES = {"opening_breakout"}
+
+
 def get_screener_list() -> list[dict[str, Any]]:
     screeners: list[dict[str, Any]] = []
     import os
@@ -31,6 +34,7 @@ def get_screener_list() -> list[dict[str, Any]]:
                 {
                     "name": module.NAME,
                     "module": module_name,
+                    "live": module_name in LIVE_MODULES,
                 }
             )
     return screeners
@@ -41,6 +45,7 @@ def render_dashboard_html(
     streamlit_mode: bool = False,
     scan_cache: dict[str, dict] | None = None,
     active_module: str | None = None,
+    live_state: dict | None = None,
 ) -> str:
     screeners = get_screener_list()
     with _flask.app_context():
@@ -51,4 +56,5 @@ def render_dashboard_html(
             streamlit_mode=streamlit_mode,
             scan_cache_json=json.dumps(scan_cache or {}),
             active_module=active_module or "",
+            live_state_json=json.dumps(live_state or {}),
         )

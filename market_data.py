@@ -55,6 +55,28 @@ def _access_token() -> str:
     return token
 
 
+def upstox_token_status() -> tuple[bool, str]:
+    """Return (ok, message) for the current access token."""
+    import base64
+    import json
+    from datetime import timezone
+
+    token = os.environ.get("UPSTOX_ACCESS_TOKEN", "").strip()
+    if not token:
+        return False, "UPSTOX_ACCESS_TOKEN is not set — run python get_upstox_token.py"
+
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(token.split(".")[1] + "=="))
+        exp = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    except (IndexError, KeyError, ValueError, json.JSONDecodeError):
+        return True, "token set (expiry unknown)"
+
+    now = datetime.now(timezone.utc)
+    if now >= exp:
+        return False, f"Upstox token expired at {exp.astimezone(IST):%Y-%m-%d %H:%M %Z} — run python get_upstox_token.py"
+    return True, f"token valid until {exp.astimezone(IST):%Y-%m-%d %H:%M %Z}"
+
+
 def _normalize_ticker(ticker: str) -> str:
     return ticker.replace(".NS", "").replace(".BO", "").strip().upper()
 
