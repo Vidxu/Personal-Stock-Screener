@@ -40,6 +40,9 @@ def render_dashboard_html(
     streamlit_mode: bool = False,
     scan_cache: dict[str, dict] | None = None,
     active_module: str | None = None,
+    monitor_module: str | None = None,
+    monitor_cycle: int = 0,
+    monitor_last_updated: float | None = None,
 ) -> str:
     screeners = get_screener_list()
     with _flask.app_context():
@@ -50,4 +53,7 @@ def render_dashboard_html(
             streamlit_mode=streamlit_mode,
             scan_cache_json=json.dumps(scan_cache or {}),
             active_module=active_module or "",
+            monitor_module=monitor_module or "",
+            monitor_cycle=monitor_cycle,
+            monitor_last_updated=monitor_last_updated,
         )

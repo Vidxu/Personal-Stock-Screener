@@ -632,6 +632,9 @@
   window.STREAMLIT_MODE = {{ streamlit_mode | default(false) | tojson }};
   window.__SCAN_CACHE__ = {{ scan_cache_json | default('{}') | safe }};
   window.__ACTIVE_MODULE__ = {{ active_module | default('') | tojson }};
+  window.__MONITOR_MODULE__ = {{ monitor_module | default('') | tojson }};
+  window.__MONITOR_CYCLE__ = {{ monitor_cycle | default(0) | tojson }};
+  window.__MONITOR_LAST_UPDATED__ = {{ monitor_last_updated | default(none) | tojson }};
 
   const cache = {};
   let activeModule = null;
@@ -646,14 +649,16 @@
   const NUMERIC_HINTS = ['price', 'change', 'volume', 'cap', 'pe', 'ratio', 'pct', '%', 'rsi', 'ma', 'high', 'low', 'open', 'close'];
   const COLUMN_ORDER = {
     opening_breakout: ['Symbol', 'Price', '% change', 'Volume'],
+    ha_rsi_divergence: ['Symbol', 'Price', 'RSI', 'Entry level', '% change'],
   };
+  const HIDDEN_COLUMNS = new Set(['signal']);
 
   function getColumns(module, results) {
     const m = module || activeModule;
-    if (COLUMN_ORDER[m]) {
-      return COLUMN_ORDER[m];
-    }
-    return results.length ? Object.keys(results[0]) : [];
+    const cols = COLUMN_ORDER[m]
+      ? COLUMN_ORDER[m]
+      : (results.length ? Object.keys(results[0]) : []);
+    return cols.filter(c => !HIDDEN_COLUMNS.has(c.toLowerCase()));
   }
 
   function isTickerCol(col) {
@@ -788,10 +793,22 @@
   }
 
   function isMonitoring(module) {
+    if (window.STREAMLIT_MODE && window.__MONITOR_MODULE__) {
+      return window.__MONITOR_MODULE__ === module;
+    }
     return Boolean(monitoring[module]?.active);
   }
 
   function stopMonitoring(module, silent = false) {
+    if (window.STREAMLIT_MODE) {
+      if (window.__MONITOR_MODULE__ === module) {
+        const url = new URL(window.top.location.href);
+        url.searchParams.set('stop_monitor', '1');
+        window.top.location.href = url.toString();
+      }
+      return;
+    }
+
     const state = monitoring[module];
     if (!state) return;
 
@@ -835,7 +852,32 @@
 
   async function startMonitoring(module, name) {
     if (window.STREAMLIT_MODE) {
-      alert('Continuous monitoring works in the local Flask app (python run_local.py). Streamlit mode only supports one-off scans.');
+      if (window.__MONITOR_MODULE__ === module) {
+        stopMonitoring(module);
+        return;
+      }
+
+      const card = document.getElementById(`card-${module}`);
+      const status = document.getElementById(`status-${module}`);
+      const scanBtn = document.getElementById(`btn-${module}`);
+
+      document.querySelectorAll('.screener-card').forEach(c => c.classList.remove('active'));
+      card?.classList.add('active', 'monitoring', 'loading');
+      setMonitorButtonState(module, true);
+      if (scanBtn) scanBtn.disabled = true;
+      if (status) {
+        status.innerHTML = '<span class="monitor-dot" style="display:inline-block;margin-right:6px"></span>Starting monitor…';
+      }
+      selectScreener(module, name);
+      document.getElementById('results-panel').innerHTML = stateHTML({
+        loading: true,
+        title: `Monitoring ${name}`,
+        desc: 'Running first scan. New matches after this will trigger <strong>sound + desktop alerts</strong>.'
+      });
+
+      const url = new URL(window.top.location.href);
+      url.searchParams.set('monitor', module);
+      window.top.location.href = url.toString();
       return;
     }
 
@@ -1010,6 +1052,7 @@
   async function stopScreener(module, name) {
     if (isMonitoring(module)) {
       stopMonitoring(module);
+      if (window.STREAMLIT_MODE) return;
     }
 
     const stopBtn = document.getElementById(`stop-${module}`);
@@ -1275,24 +1318,41 @@
       if (card) {
         const name = card.dataset.name;
         const data = cache[module];
+        const monitoringActive = window.STREAMLIT_MODE && window.__MONITOR_MODULE__ === module;
         selectScreener(module, name);
         const statusEl = document.getElementById(`status-${module}`);
         const btn = document.getElementById(`btn-${module}`);
+        const stopBtn = document.getElementById(`stop-${module}`);
         card.classList.remove('loading');
-        if (btn) {
+        if (monitoringActive) {
+          card.classList.add('monitoring');
+          setMonitorButtonState(module, true);
+          if (btn) btn.disabled = true;
+          if (stopBtn) stopBtn.disabled = false;
+        } else if (btn) {
           btn.disabled = false;
           btn.innerHTML = '<span aria-hidden="true">🔍</span> Scan';
         }
         if (data.error) {
-          if (statusEl) statusEl.textContent = 'Error';
+          if (statusEl) statusEl.textContent = monitoringActive ? 'Error · retrying…' : 'Error';
           document.getElementById('results-panel').innerHTML =
-            `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">Scan failed</p><p class="state-desc">${data.error}</p></div>`;
+            `<div class="state-box error"><div class="state-icon">⚠</div><p class="state-title">${monitoringActive ? 'Monitor paused — scan failed' : 'Scan failed'}</p><p class="state-desc">${data.error}${monitoringActive ? '<br><br>Will retry automatically.' : ''}</p></div>`;
         } else {
           const count = data.results.length;
           if (statusEl) {
-            statusEl.textContent = `${count} result${count !== 1 ? 's' : ''} · just now`;
+            if (monitoringActive && window.__MONITOR_LAST_UPDATED__) {
+              const updated = new Date(window.__MONITOR_LAST_UPDATED__ * 1000);
+              const timeStr = updated.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+              const cycleNote = window.__MONITOR_CYCLE__ ? ` · scan #${window.__MONITOR_CYCLE__}` : '';
+              statusEl.innerHTML = `<span class="monitor-dot" style="display:inline-block;margin-right:6px"></span>${count} match${count !== 1 ? 'es' : ''} · ${timeStr}${cycleNote}`;
+            } else {
+              statusEl.textContent = `${count} result${count !== 1 ? 's' : ''} · just now`;
+            }
           }
-          renderResults(module, data.name, data.results);
+          renderResults(module, data.name, data.results, monitoringActive ? {
+            monitoring: true,
+            lastUpdated: window.__MONITOR_LAST_UPDATED__ ? new Date(window.__MONITOR_LAST_UPDATED__ * 1000) : null,
+          } : undefined);
         }
       }
     }
