@@ -134,8 +134,11 @@ def _monitor_scan(module: str) -> list[dict[str, str]]:
 
 def _render_alert_bridge(alerts: list[dict[str, str]], *, monitoring: bool) -> None:
     """Top-level alert bridge — desktop notifications work here (not in the dashboard iframe)."""
+    if not monitoring and not alerts:
+        return
+
     alerts_json = json.dumps(alerts)
-    height = 44 if monitoring else 0
+    height: int | str = 44 if monitoring else "content"
     st.iframe(
         f"""
 <!DOCTYPE html>
