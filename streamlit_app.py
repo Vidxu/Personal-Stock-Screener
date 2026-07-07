@@ -10,7 +10,6 @@ from datetime import timedelta
 from typing import Any
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from ui import get_screener_list, render_dashboard_html
 from universe import get_nifty500_stocks
@@ -137,7 +136,7 @@ def _render_alert_bridge(alerts: list[dict[str, str]], *, monitoring: bool) -> N
     """Top-level alert bridge — desktop notifications work here (not in the dashboard iframe)."""
     alerts_json = json.dumps(alerts)
     height = 44 if monitoring else 0
-    components.html(
+    st.iframe(
         f"""
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"></head><body style="margin:0;font-family:system-ui,sans-serif;">
@@ -325,7 +324,7 @@ def run_streamlit_ui() -> None:
         monitor_cycle=st.session_state.get("monitor_cycle", 0),
         monitor_last_updated=st.session_state.get("monitor_last_updated"),
     )
-    components.html(html, height=920, scrolling=True)
+    st.iframe(html, height=920)
 
     if monitor_module:
         _monitor_tick(valid_modules)
